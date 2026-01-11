@@ -11,7 +11,7 @@ Unlike autoregressive models (GPT-style) that generate text left-to-right, diffu
 - [x] **Phase 1**: Data preparation (tokenizer, dataset processing)
 - [x] **Phase 2**: Model architecture (bidirectional transformer, diffusion process)
 - [x] **Phase 3**: Training loop (mixed precision, checkpointing, wandb)
-- [ ] **Phase 4**: Generation & evaluation
+- [ ] **Phase 4**: Generation & evaluation (cross-attention conditioning)
 - [ ] **Phase 5**: Jetson optimization
 - [ ] **Phase 6**: Extensions (multimodal, custom CUDA kernels)
 

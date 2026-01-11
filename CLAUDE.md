@@ -141,12 +141,18 @@ The codebase follows a modular structure:
 - Wandb integration for experiment tracking
 - Checkpointing every N steps
 
-**5. Generation** (`generate.py`)
+**5. Conditioning Architecture** (Phase 4 - planned)
+- **Encoder**: Bidirectional transformer to process prompt/condition
+- **Cross-attention**: Decoder attends to encoder outputs (original Transformer style)
+- Enables controlled generation from prompts without masking constraints
+- Alternative: Prefix conditioning (simpler, mask only the completion)
+
+**6. Generation** (`generate.py`)
 - Interactive text generation with temperature and top-k sampling
 - Supports conditional generation (prompt-based)
 - Multiple samples per prompt
 
-**6. Jetson Optimization** (`export_jetson.py`, `inference_jetson.py`)
+**7. Jetson Optimization** (`export_jetson.py`, `inference_jetson.py`)
 - FP16 conversion for 2x memory reduction
 - TorchScript tracing for JIT optimization
 - Optional TensorRT compilation for maximum speed
@@ -253,6 +259,14 @@ Defined in `model.py`:
 - At t=1: input is all masks → model makes rough predictions
 - At t=0: input is nearly clean → model makes fine-grained refinements
 - Critical for multi-step denoising to work correctly
+
+**Embedding Design Choices:**
+- Currently using sinusoidal embeddings for timestep and position (convention from original Transformer)
+- Alternative approaches that may work equally well:
+  - **Raw scalar + MLP**: Project t directly via learned linear layers (like CoordConv uses raw coordinates)
+  - **ALiBi**: Add linear position biases directly to attention scores (no position embedding)
+  - **Learned lookup**: Discretize t into buckets with learned embeddings
+- Sinusoidal is parameter-free but not necessarily optimal; MLP projection is worth experimenting with
 
 **Output Projection:**
 - Model outputs logits for ALL vocabulary positions at ALL sequence positions
