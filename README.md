@@ -65,4 +65,10 @@ pytest -v
 pytest --cov=. --cov-report=term-missing
 ```
 
-**Current coverage: 88% (101 tests passing)**
+**Current coverage: 98% (119 tests passing)**
+
+| Module | Coverage |
+|--------|----------|
+| `data_prep.py` | 96% |
+| `model.py` | 99% |
+| `diffusion.py` | 100% |
