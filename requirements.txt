@@ -1,0 +1,16 @@
+# Core ML framework
+torch>=2.0.0
+
+# Data loading and tokenization
+datasets>=2.14.0
+tokenizers>=0.15.0
+
+# Training utilities
+wandb>=0.15.0
+tqdm>=4.65.0
+
+# Tensor operations
+einops>=0.7.0
+
+# Optional: for evaluation
+numpy>=1.24.0
