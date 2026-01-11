@@ -108,3 +108,14 @@ model = create_conditional_model(
 # Stage 2: Freeze decoder, train only encoder + cross-attention
 model.freeze_decoder()
 ```
+
+## Future: Block Diffusion
+
+Long-term stretch goal: implement [Block Diffusion](https://arxiv.org/abs/2503.09573) (ICLR 2025 Oral) which interpolates between autoregressive and diffusion models:
+
+- **Block-wise generation**: Divide sequence into blocks, generate blocks autoregressively, diffuse within each block
+- **Arbitrary length**: No fixed sequence length limitation
+- **KV caching**: Cache across blocks for faster inference
+- **Tunable tradeoff**: Block size controls quality vs speed
+
+This would combine parallel generation (fast) with streaming output (responsive UX) — ideal for Jetson deployment.

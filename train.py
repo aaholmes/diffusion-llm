@@ -89,6 +89,9 @@ class TrainConfig:
     # Resume
     resume_from: Optional[str] = None
 
+    # Early stopping (patience=0 disables)
+    early_stopping_patience: int = 0
+
     @property
     def effective_batch_size(self) -> int:
         return self.batch_size * self.grad_accum_steps
@@ -120,6 +123,7 @@ class Trainer:
         # Training state
         self.global_step = 0
         self.best_val_loss = float('inf')
+        self.evals_without_improvement = 0
 
         # Resume if specified
         if config.resume_from:
@@ -495,7 +499,18 @@ class Trainer:
                     is_best = val_metrics["val_loss"] < self.best_val_loss
                     if is_best:
                         self.best_val_loss = val_metrics["val_loss"]
+                        self.evals_without_improvement = 0
                         print(f"  New best model!")
+                    else:
+                        self.evals_without_improvement += 1
+                        if self.config.early_stopping_patience > 0:
+                            print(f"  No improvement ({self.evals_without_improvement}/{self.config.early_stopping_patience})")
+
+                    # Early stopping check
+                    if (self.config.early_stopping_patience > 0 and
+                        self.evals_without_improvement >= self.config.early_stopping_patience):
+                        print(f"\nEarly stopping: no improvement for {self.config.early_stopping_patience} evaluations")
+                        break
 
                     # Log to wandb
                     if self.use_wandb:

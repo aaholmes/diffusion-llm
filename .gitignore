@@ -1,4 +1,6 @@
+checkpoints/
 .coverage
+data/
 PROJECT_PLAN.md
 __pycache__/
 *.pyc
