@@ -1,5 +1,5 @@
-PROJECT_PLAN.md
 .coverage
+PROJECT_PLAN.md
 __pycache__/
 *.pyc
 .pytest_cache/
