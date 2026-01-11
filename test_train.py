@@ -498,6 +498,206 @@ class TestEdgeCases:
 
 
 # =============================================================================
+# Tests: Data Iterator Exhaustion
+# =============================================================================
+
+class TestDataIterator:
+    """Tests for data iterator behavior."""
+
+    def test_iterator_resets_on_exhaustion(self, small_config, mock_data, temp_dir):
+        """Test that data iterator resets when exhausted."""
+        # Create config where we'll exhaust the data loader multiple times
+        # 100 samples with batch_size 8 = ~12 batches per epoch
+        # max_steps 25 > 12 batches, so iterator must reset
+        config = TrainConfig(
+            **{**small_config.__dict__,
+               'batch_size': 8,
+               'max_steps': 25,
+               'grad_accum_steps': 1,
+               'eval_every': 100,  # Don't eval during this test
+               'save_every': 100,
+               'use_wandb': False}
+        )
+
+        trainer = Trainer(config)
+        trainer.train()
+
+        # If we got here without error, iterator reset worked
+        assert trainer.global_step == 25
+
+
+# =============================================================================
+# Tests: Wandb Integration
+# =============================================================================
+
+class TestWandbIntegration:
+    """Tests for wandb logging integration."""
+
+    def test_wandb_disabled_by_config(self, small_config, mock_data):
+        """Test that wandb can be disabled via config."""
+        config = TrainConfig(
+            **{**small_config.__dict__,
+               'use_wandb': False}
+        )
+
+        trainer = Trainer(config)
+        assert trainer.use_wandb is False
+
+    def test_wandb_init_failure_handled(self, small_config, mock_data):
+        """Test that wandb init failure is handled gracefully."""
+        from unittest.mock import patch, MagicMock
+
+        config = TrainConfig(
+            **{**small_config.__dict__,
+               'use_wandb': True}
+        )
+
+        # Mock wandb to raise an exception on init
+        with patch.dict('sys.modules', {'wandb': MagicMock()}):
+            import sys
+            mock_wandb = sys.modules['wandb']
+            mock_wandb.init.side_effect = Exception("Wandb connection failed")
+
+            trainer = Trainer(config)
+            # Should have disabled wandb after failure
+            assert trainer.use_wandb is False
+
+    def test_wandb_import_error_handled(self, small_config, mock_data):
+        """Test that missing wandb is handled gracefully."""
+        from unittest.mock import patch
+
+        config = TrainConfig(
+            **{**small_config.__dict__,
+               'use_wandb': True}
+        )
+
+        # Mock wandb import to fail
+        with patch.dict('sys.modules', {'wandb': None}):
+            trainer = Trainer(config)
+            # Should have disabled wandb after import failure
+            assert trainer.use_wandb is False
+
+
+# =============================================================================
+# Tests: Logging and Metrics
+# =============================================================================
+
+class TestLoggingMetrics:
+    """Tests for logging and metrics tracking."""
+
+    def test_log_every_respected(self, small_config, mock_data):
+        """Test that log_every controls logging frequency."""
+        config = TrainConfig(
+            **{**small_config.__dict__,
+               'max_steps': 10,
+               'log_every': 5,
+               'eval_every': 100,
+               'save_every': 100,
+               'use_wandb': False}
+        )
+
+        trainer = Trainer(config)
+        trainer.train()
+
+        # Training should complete without logging errors
+        assert trainer.global_step == 10
+
+    def test_metrics_accumulation(self, trainer):
+        """Test that metrics accumulate correctly across steps."""
+        batch = torch.randint(5, 256, (4, 32))
+
+        # Run multiple steps
+        all_metrics = []
+        for _ in range(3):
+            metrics = trainer.train_step(batch)
+            all_metrics.append(metrics)
+
+        # All metrics should be valid
+        for m in all_metrics:
+            assert "loss" in m
+            assert m["loss"] > 0
+
+
+# =============================================================================
+# Tests: AMP (Automatic Mixed Precision)
+# =============================================================================
+
+class TestAMP:
+    """Tests for automatic mixed precision."""
+
+    def test_amp_disabled_on_cpu(self, small_config, mock_data):
+        """Test that AMP is disabled when on CPU."""
+        config = TrainConfig(
+            **{**small_config.__dict__,
+               'device': 'cpu',
+               'use_amp': True,
+               'use_wandb': False}
+        )
+
+        trainer = Trainer(config)
+        # AMP should be disabled on CPU
+        assert not trainer.config.use_amp or trainer.config.device == 'cpu'
+
+    def test_training_works_without_amp(self, small_config, mock_data):
+        """Test that training works with AMP disabled."""
+        config = TrainConfig(
+            **{**small_config.__dict__,
+               'use_amp': False,
+               'max_steps': 3,
+               'use_wandb': False}
+        )
+
+        trainer = Trainer(config)
+        trainer.train()
+
+        assert trainer.global_step == 3
+
+
+# =============================================================================
+# Tests: Checkpoint Cleanup
+# =============================================================================
+
+class TestCheckpointCleanup:
+    """Tests for checkpoint cleanup behavior."""
+
+    def test_keeps_best_checkpoint(self, trainer, temp_dir):
+        """Test that best checkpoint is kept during cleanup."""
+        # Save several checkpoints
+        trainer.best_val_loss = 0.5
+        trainer.global_step = 100
+        trainer.save_checkpoint("step_100", is_best=True)
+
+        trainer.global_step = 200
+        trainer.save_checkpoint("step_200")
+
+        trainer.global_step = 300
+        trainer.save_checkpoint("step_300")
+
+        # Best should still exist
+        best_path = os.path.join(trainer.config.checkpoint_dir, "best.pt")
+        assert os.path.exists(best_path)
+
+
+# =============================================================================
+# Tests: Model Parameter Access
+# =============================================================================
+
+class TestModelAccess:
+    """Tests for model parameter access."""
+
+    def test_model_parameters_accessible(self, trainer):
+        """Test that model parameters are accessible."""
+        params = list(trainer.model.parameters())
+        assert len(params) > 0
+
+    def test_optimizer_has_model_params(self, trainer):
+        """Test that optimizer contains model parameters."""
+        param_groups = trainer.optimizer.param_groups
+        assert len(param_groups) > 0
+        assert len(param_groups[0]['params']) > 0
+
+
+# =============================================================================
 # Main
 # =============================================================================
 

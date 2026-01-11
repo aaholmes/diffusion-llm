@@ -121,6 +121,8 @@ class DiscreteDiffusion:
         x: torch.Tensor,
         t: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        encoder_output: Optional[torch.Tensor] = None,
+        encoder_attention_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Compute training loss for a batch of clean sequences.
@@ -129,10 +131,13 @@ class DiscreteDiffusion:
         at masked positions only.
 
         Args:
-            model: DiffusionTransformer
+            model: DiffusionTransformer or ConditionalDiffusionLM
             x: Clean token indices [batch_size, seq_len]
             t: Optional noise levels [batch_size]. Sampled uniformly if not provided.
             attention_mask: Optional mask [batch_size, seq_len] (1=valid, 0=padding)
+            encoder_output: Optional encoder output for cross-attention conditioning
+                           [batch_size, encoder_seq_len, d_model]
+            encoder_attention_mask: Optional mask for encoder [batch_size, encoder_seq_len]
 
         Returns:
             loss: Scalar loss value
@@ -148,8 +153,13 @@ class DiscreteDiffusion:
         # Forward process: corrupt tokens
         x_noisy, mask = self.q_sample(x, t)
 
-        # Get model predictions
-        logits = model(x_noisy, t, attention_mask=attention_mask)
+        # Get model predictions (with optional conditioning)
+        logits = model(
+            x_noisy, t,
+            attention_mask=attention_mask,
+            encoder_output=encoder_output,
+            encoder_attention_mask=encoder_attention_mask,
+        )
 
         # Compute cross-entropy loss only on masked positions
         # Reshape for cross_entropy: [batch * seq_len, vocab_size]
@@ -197,6 +207,8 @@ class DiscreteDiffusion:
         temperature: float = 1.0,
         top_k: Optional[int] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        encoder_output: Optional[torch.Tensor] = None,
+        encoder_attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Single reverse process step: denoise from t to t_next.
@@ -209,6 +221,8 @@ class DiscreteDiffusion:
             temperature: Sampling temperature
             top_k: Optional top-k filtering
             attention_mask: Optional attention mask
+            encoder_output: Optional encoder output for conditioning
+            encoder_attention_mask: Optional mask for encoder
 
         Returns:
             x_denoised: Less noisy tokens [batch_size, seq_len]
@@ -216,8 +230,13 @@ class DiscreteDiffusion:
         batch_size, seq_len = x.shape
         device = x.device
 
-        # Get model predictions
-        logits = model(x, t, attention_mask=attention_mask)
+        # Get model predictions (with optional conditioning)
+        logits = model(
+            x, t,
+            attention_mask=attention_mask,
+            encoder_output=encoder_output,
+            encoder_attention_mask=encoder_attention_mask,
+        )
 
         # Apply temperature
         if temperature != 1.0:
@@ -278,6 +297,8 @@ class DiscreteDiffusion:
         device: str = "cuda",
         prompt: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        encoder_output: Optional[torch.Tensor] = None,
+        encoder_attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Generate sequences by iterative denoising.
@@ -290,15 +311,17 @@ class DiscreteDiffusion:
             temperature: Sampling temperature (lower = more deterministic)
             top_k: Optional top-k filtering
             device: Device to use
-            prompt: Optional prompt tokens [batch_size, prompt_len]
+            prompt: Optional prompt tokens [batch_size, prompt_len] (for prefix conditioning)
             attention_mask: Optional attention mask
+            encoder_output: Optional encoder output for cross-attention conditioning
+            encoder_attention_mask: Optional mask for encoder
 
         Returns:
             samples: Generated token indices [batch_size, seq_len]
         """
         model.eval()
 
-        # Handle prompt
+        # Handle prompt (for prefix-style conditioning)
         if prompt is not None:
             prompt_len = prompt.shape[1]
             assert prompt.shape[0] == batch_size, "Prompt batch size must match"
@@ -325,9 +348,11 @@ class DiscreteDiffusion:
                 temperature=temperature,
                 top_k=top_k,
                 attention_mask=attention_mask,
+                encoder_output=encoder_output,
+                encoder_attention_mask=encoder_attention_mask,
             )
 
-            # Keep prompt fixed
+            # Keep prompt fixed (for prefix conditioning)
             if prompt is not None:
                 x[:, :prompt_len] = prompt
 

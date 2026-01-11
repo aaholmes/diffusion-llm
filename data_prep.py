@@ -210,6 +210,124 @@ def tokenize_dataset(
     return tokens_tensor
 
 
+def split_into_sentences(text: str) -> list:
+    """
+    Split text into sentences using simple heuristics.
+
+    Handles common sentence endings (.!?) while being simple and robust.
+    """
+    import re
+
+    # Protect common abbreviations by temporarily replacing their periods
+    protected = text
+    for abbrev in ['Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Prof.', 'Sr.', 'Jr.', 'vs.', 'etc.', 'e.g.', 'i.e.']:
+        protected = protected.replace(abbrev, abbrev.replace('.', '<DOT>'))
+
+    # Split on sentence-ending punctuation followed by space
+    parts = re.split(r'([.!?])\s+', protected)
+
+    # Reconstruct sentences (split gives us alternating content and punctuation)
+    sentences = []
+    i = 0
+    while i < len(parts):
+        if i + 1 < len(parts) and parts[i + 1] in '.!?':
+            sentence = parts[i] + parts[i + 1]
+            i += 2
+        else:
+            sentence = parts[i]
+            i += 1
+
+        # Restore protected periods
+        sentence = sentence.replace('<DOT>', '.').strip()
+        if sentence:
+            sentences.append(sentence)
+
+    return sentences
+
+
+def extract_conditional_pairs(
+    dataset,
+    tokenizer,
+    config: DataConfig,
+    encoder_max_len: int = 64,
+    decoder_max_len: int = 192,
+    desc: str = "Extracting pairs",
+) -> tuple:
+    """
+    Extract (first sentence, rest of paragraph) pairs for conditional training.
+
+    For each paragraph in each story:
+    - First sentence becomes encoder input (prompt)
+    - Rest of paragraph becomes decoder target (completion)
+
+    Args:
+        dataset: HuggingFace dataset with "text" field
+        tokenizer: Trained tokenizer
+        config: Data configuration
+        encoder_max_len: Max tokens for encoder input
+        decoder_max_len: Max tokens for decoder target
+        desc: Progress bar description
+
+    Returns:
+        tuple: (encoder_tokens, decoder_tokens) tensors
+    """
+    encoder_tokens_list = []
+    decoder_tokens_list = []
+
+    for example in tqdm(dataset, desc=desc):
+        text = example["text"]
+
+        # Split into paragraphs
+        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+
+        for para in paragraphs:
+            # Split paragraph into sentences
+            sentences = split_into_sentences(para)
+
+            if len(sentences) < 2:
+                continue  # Need at least 2 sentences
+
+            # First sentence = encoder input (prompt)
+            first_sentence = sentences[0]
+            # Rest = decoder target (completion)
+            rest = ' '.join(sentences[1:])
+
+            # Skip if either part is too short
+            if len(first_sentence) < 10 or len(rest) < 10:
+                continue
+
+            # Tokenize encoder input
+            enc_encoding = tokenizer.encode(first_sentence)
+            enc_tokens = enc_encoding.ids
+
+            # Truncate/pad encoder
+            if len(enc_tokens) > encoder_max_len:
+                enc_tokens = enc_tokens[:encoder_max_len - 1] + [config.eos_token_id]
+            if len(enc_tokens) < encoder_max_len:
+                enc_tokens = enc_tokens + [config.pad_token_id] * (encoder_max_len - len(enc_tokens))
+
+            # Tokenize decoder target
+            dec_encoding = tokenizer.encode(rest)
+            dec_tokens = dec_encoding.ids
+
+            # Truncate/pad decoder
+            if len(dec_tokens) > decoder_max_len:
+                dec_tokens = dec_tokens[:decoder_max_len - 1] + [config.eos_token_id]
+            if len(dec_tokens) < decoder_max_len:
+                dec_tokens = dec_tokens + [config.pad_token_id] * (decoder_max_len - len(dec_tokens))
+
+            encoder_tokens_list.append(enc_tokens)
+            decoder_tokens_list.append(dec_tokens)
+
+    # Convert to tensors
+    encoder_tokens = torch.tensor(encoder_tokens_list, dtype=torch.long)
+    decoder_tokens = torch.tensor(decoder_tokens_list, dtype=torch.long)
+
+    print(f"  Extracted {len(encoder_tokens):,} conditional pairs")
+
+    return encoder_tokens, decoder_tokens
+
+
 def compute_statistics(tokens: torch.Tensor, config: DataConfig) -> dict:
     """Compute dataset statistics."""
     # Non-padding tokens per sequence

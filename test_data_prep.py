@@ -428,6 +428,115 @@ class TestIntegration:
 
 
 # =============================================================================
+# Tests: extract_conditional_pairs
+# =============================================================================
+
+class TestExtractConditionalPairs:
+    """Tests for extract_conditional_pairs function."""
+
+    @pytest.fixture
+    def multi_paragraph_dataset(self):
+        """Dataset with multi-paragraph, multi-sentence stories."""
+        class MockDataset:
+            def __init__(self):
+                self.texts = [
+                    "First sentence here. Second sentence continues. Third sentence ends.\n\nNew paragraph starts. It has more content. And even more.",
+                    "Opening line. More details follow. The story continues.\n\nAnother section. With additional text. Final part here.",
+                    "Short. But valid.",  # Too short, should be skipped
+                ]
+
+            def __iter__(self):
+                for text in self.texts:
+                    yield {"text": text}
+
+            def __len__(self):
+                return len(self.texts)
+
+        return MockDataset()
+
+    def test_extracts_pairs(self, multi_paragraph_dataset, trained_tokenizer, config):
+        """Test that pairs are extracted from paragraphs."""
+        from data_prep import extract_conditional_pairs
+
+        enc_tokens, dec_tokens = extract_conditional_pairs(
+            multi_paragraph_dataset, trained_tokenizer, config,
+            encoder_max_len=32, decoder_max_len=64,
+        )
+
+        # Should have extracted some pairs
+        assert len(enc_tokens) > 0
+        assert len(dec_tokens) > 0
+        assert len(enc_tokens) == len(dec_tokens)
+
+    def test_encoder_decoder_shapes(self, multi_paragraph_dataset, trained_tokenizer, config):
+        """Test encoder and decoder output shapes."""
+        from data_prep import extract_conditional_pairs
+
+        encoder_max_len = 32
+        decoder_max_len = 64
+
+        enc_tokens, dec_tokens = extract_conditional_pairs(
+            multi_paragraph_dataset, trained_tokenizer, config,
+            encoder_max_len=encoder_max_len, decoder_max_len=decoder_max_len,
+        )
+
+        assert enc_tokens.shape[1] == encoder_max_len
+        assert dec_tokens.shape[1] == decoder_max_len
+
+    def test_tokens_start_with_bos(self, multi_paragraph_dataset, trained_tokenizer, config):
+        """Test that both encoder and decoder start with BOS."""
+        from data_prep import extract_conditional_pairs
+
+        enc_tokens, dec_tokens = extract_conditional_pairs(
+            multi_paragraph_dataset, trained_tokenizer, config,
+            encoder_max_len=32, decoder_max_len=64,
+        )
+
+        # All should start with BOS
+        assert (enc_tokens[:, 0] == config.bos_token_id).all()
+        assert (dec_tokens[:, 0] == config.bos_token_id).all()
+
+    def test_skips_short_content(self, trained_tokenizer, config):
+        """Test that very short sentences/paragraphs are skipped."""
+        from data_prep import extract_conditional_pairs
+
+        class ShortDataset:
+            def __iter__(self):
+                yield {"text": "Hi. Bye."}  # Too short
+                yield {"text": "A. B."}  # Way too short
+
+            def __len__(self):
+                return 2
+
+        enc_tokens, dec_tokens = extract_conditional_pairs(
+            ShortDataset(), trained_tokenizer, config,
+            encoder_max_len=32, decoder_max_len=64,
+        )
+
+        # Should skip these short pairs
+        assert len(enc_tokens) == 0
+
+    def test_handles_single_sentence_paragraph(self, trained_tokenizer, config):
+        """Test that single-sentence paragraphs are skipped."""
+        from data_prep import extract_conditional_pairs
+
+        class SingleSentenceDataset:
+            def __iter__(self):
+                yield {"text": "This is just one sentence with no split possible."}
+
+            def __len__(self):
+                return 1
+
+        enc_tokens, dec_tokens = extract_conditional_pairs(
+            SingleSentenceDataset(), trained_tokenizer, config,
+            encoder_max_len=32, decoder_max_len=64,
+        )
+
+        # Should be empty - can't split single sentence
+        assert len(enc_tokens) == 0
+
+
+# =============================================================================
 # Edge Cases
 # =============================================================================
 

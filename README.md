@@ -11,7 +11,7 @@ Unlike autoregressive models (GPT-style) that generate text left-to-right, diffu
 - [x] **Phase 1**: Data preparation (tokenizer, dataset processing)
 - [x] **Phase 2**: Model architecture (bidirectional transformer, diffusion process)
 - [x] **Phase 3**: Training loop (mixed precision, checkpointing, wandb)
-- [ ] **Phase 4**: Generation & evaluation (cross-attention conditioning)
+- [x] **Phase 4**: Conditioning architecture (encoder, cross-attention, staged training)
 - [ ] **Phase 5**: Jetson optimization
 - [ ] **Phase 6**: Extensions (multimodal, custom CUDA kernels)
 
@@ -53,12 +53,14 @@ pytest -v
 
 ## Model Configurations
 
-| Config | Parameters | Size | Use Case |
-|--------|------------|------|----------|
-| tiny   | 7.6M       | 29 MB | Debugging |
-| small  | 17.3M      | 66 MB | Prototyping |
-| medium | 34.3M      | 131 MB | Production |
-| large  | 60.7M      | 232 MB | Best quality |
+| Config  | d_model | Heads | Layers | Parameters | Use Case |
+|---------|---------|-------|--------|------------|----------|
+| tiny    | 256     | 4     | 4      | ~4.5M      | Debugging |
+| small   | 384     | 6     | 6      | ~15M       | Prototyping |
+| medium  | 512     | 8     | 8      | ~35M       | Production |
+| large   | 640     | 10    | 10     | ~60M       | Best quality |
+| xlarge  | 768     | 12    | 12     | ~110M      | Jetson (~1.2s) |
+| xxlarge | 1024    | 16    | 16     | ~250M      | Jetson (~2.0s) |
 
 ## Hardware Targets
 
@@ -75,11 +77,34 @@ pytest -v
 pytest --cov=. --cov-report=term-missing
 ```
 
-**Current coverage: 92% (151 tests passing)**
+**Current coverage: 94% (202 tests passing)**
 
 | Module | Coverage |
 |--------|----------|
 | `data_prep.py` | 96% |
-| `model.py` | 99% |
+| `model.py` | 97% |
 | `diffusion.py` | 100% |
-| `train.py` | 83% |
+| `train.py` | 87% |
+
+## Conditioning Architecture
+
+Phase 4 adds encoder-decoder conditioning for controlled generation:
+
+- **TextEncoder**: Bidirectional transformer encoding input text
+- **Cross-Attention**: Decoder attends to encoder output (original Transformer style)
+- **Staged Training**: Train denoiser → freeze → train encoder + cross-attention
+- **Data Pipeline**: Extract (first sentence → rest of paragraph) pairs
+
+```python
+from model import create_conditional_model
+
+# Create encoder-decoder model
+model = create_conditional_model(
+    encoder_config="small",
+    decoder_config="small",
+    vocab_size=8192,
+)
+
+# Stage 2: Freeze decoder, train only encoder + cross-attention
+model.freeze_decoder()
+```
