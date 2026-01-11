@@ -10,7 +10,7 @@ Unlike autoregressive models (GPT-style) that generate text left-to-right, diffu
 
 - [x] **Phase 1**: Data preparation (tokenizer, dataset processing)
 - [x] **Phase 2**: Model architecture (bidirectional transformer, diffusion process)
-- [ ] **Phase 3**: Training loop
+- [x] **Phase 3**: Training loop (mixed precision, checkpointing, wandb)
 - [ ] **Phase 4**: Generation & evaluation
 - [ ] **Phase 5**: Jetson optimization
 - [ ] **Phase 6**: Extensions (multimodal, custom CUDA kernels)
@@ -23,6 +23,9 @@ pip install -r requirements.txt
 
 # Prepare data (downloads TinyStories, trains tokenizer, tokenizes dataset)
 python data_prep.py
+
+# Train model
+python train.py --model_config small --max_steps 50000
 
 # Run tests
 pytest -v
@@ -40,6 +43,13 @@ pytest -v
 - Cosine noise schedule for smooth masking
 - Forward process: progressively mask tokens
 - Reverse process: iteratively unmask via model predictions
+
+**Trainer** (`train.py`):
+- AdamW optimizer with linear warmup + cosine decay
+- Mixed precision training (FP16)
+- Gradient accumulation and clipping
+- Automatic checkpointing with best model tracking
+- Optional Weights & Biases logging
 
 ## Model Configurations
 
@@ -65,10 +75,11 @@ pytest -v
 pytest --cov=. --cov-report=term-missing
 ```
 
-**Current coverage: 98% (119 tests passing)**
+**Current coverage: 92% (151 tests passing)**
 
 | Module | Coverage |
 |--------|----------|
 | `data_prep.py` | 96% |
 | `model.py` | 99% |
 | `diffusion.py` | 100% |
+| `train.py` | 83% |
