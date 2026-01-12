@@ -44,6 +44,9 @@ class ConditionalTrainConfig:
     # Pretrained denoiser
     denoiser_checkpoint: str = "checkpoints_long/final.pt"
 
+    # Resume from checkpoint
+    resume_checkpoint: str = None  # Path to checkpoint to resume from
+
     # Encoder config (use same architecture as decoder for simplicity)
     encoder_config: str = "small"
     encoder_n_layers: int = 4  # Smaller encoder is fine
@@ -104,6 +107,10 @@ class ConditionalTrainer:
 
         self.global_step = 0
         self.best_val_loss = float('inf')
+
+        # Resume from checkpoint if provided
+        if config.resume_checkpoint:
+            self._load_checkpoint(config.resume_checkpoint)
 
     def _setup_model(self):
         """Initialize encoder and decoder with pretrained weights."""
@@ -451,10 +458,25 @@ class ConditionalTrainer:
         torch.save(checkpoint, path)
         print(f"Saved checkpoint: {path}")
 
-        if is_best:
-            best_path = os.path.join(self.config.checkpoint_dir, "best.pt")
-            torch.save(checkpoint, best_path)
-            print(f"Saved best model: {best_path}")
+    def _load_checkpoint(self, checkpoint_path: str):
+        """Load checkpoint to resume training."""
+        print(f"\nResuming from checkpoint: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+
+        # Load model states
+        self.encoder.load_state_dict(checkpoint['encoder_state_dict'])
+        self.decoder.load_state_dict(checkpoint['decoder_state_dict'])
+
+        # Load optimizer and scaler states
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
+
+        # Load training state
+        self.global_step = checkpoint['global_step']
+        self.best_val_loss = checkpoint['best_val_loss']
+
+        print(f"  Resuming from step {self.global_step}")
+        print(f"  Best val loss: {self.best_val_loss:.4f}")
 
     @torch.no_grad()
     def generate_sample(self, prompt_tokens: torch.Tensor, steps: int = 50) -> torch.Tensor:
@@ -598,9 +620,13 @@ def main():
                        help="Path to pretrained denoiser checkpoint")
     parser.add_argument("--encoder_n_layers", type=int, default=4,
                        help="Number of encoder layers (default: 4)")
+    parser.add_argument("--resume", type=str, default=None,
+                       help="Path to checkpoint to resume training from")
 
     # Data
     parser.add_argument("--data_dir", type=str, default="data_conditional")
+    parser.add_argument("--max_encoder_len", type=int, default=64)
+    parser.add_argument("--max_decoder_len", type=int, default=192)
 
     # Training
     parser.add_argument("--batch_size", type=int, default=64)
@@ -622,7 +648,10 @@ def main():
     config = ConditionalTrainConfig(
         denoiser_checkpoint=args.denoiser,
         encoder_n_layers=args.encoder_n_layers,
+        resume_checkpoint=args.resume,
         data_dir=args.data_dir,
+        max_encoder_len=args.max_encoder_len,
+        max_decoder_len=args.max_decoder_len,
         batch_size=args.batch_size,
         max_steps=args.max_steps,
         learning_rate=args.learning_rate,
