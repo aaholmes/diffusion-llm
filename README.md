@@ -12,7 +12,8 @@ Unlike autoregressive models (GPT-style) that generate text left-to-right, diffu
 - [x] **Phase 2**: Model architecture (bidirectional transformer, diffusion process)
 - [x] **Phase 3**: Training loop (mixed precision, checkpointing, wandb)
 - [x] **Phase 4**: Conditioning architecture (encoder, cross-attention, staged training)
-- [x] **Phase 4.5**: First successful training run on full dataset
+- [x] **Phase 4.5**: First successful training run on full dataset (17M params, 12.5k steps)
+- [x] **Phase 4.6**: Conditional data prep + Stage 2 training script
 - [ ] **Phase 5**: Jetson optimization
 - [ ] **Phase 6**: Extensions (multimodal, LoRA, custom CUDA kernels)
 
@@ -71,11 +72,21 @@ python generate.py --checkpoint checkpoints_long/final.pt
 python evaluate.py --checkpoint checkpoints_long/final.pt
 ```
 
-### Conditional Training (Coming Soon)
+### Conditional Training (Stage 2)
 
 ```bash
-# Prepare paired data (first sentence -> rest of story)
+# Step 1: Prepare paired data (first sentence -> rest of story)
 python prep_conditional_data.py
+
+# Step 2: Train conditional model with frozen denoiser
+python train_conditional.py \
+    --denoiser checkpoints_long/final.pt \
+    --max_steps 10000
+
+# Step 3: Generate conditional samples
+python generate_conditional.py \
+    --checkpoint checkpoints_conditional/best.pt \
+    --prompt "Once upon a time there was a brave knight."
 ```
 
 ## Architecture
@@ -124,15 +135,17 @@ pytest -v
 pytest --cov=. --cov-report=term-missing
 ```
 
-**Current coverage: 89% (273 tests passing)**
+**Current coverage: 90% (305 tests passing)**
 
 | Module | Coverage |
 |--------|----------|
 | `diffusion.py` | 100% |
 | `train_config_long.py` | 100% |
+| `generate_conditional.py` | 98% |
 | `model.py` | 97% |
 | `data_prep.py` | 96% |
 | `generate.py` | 95% |
+| `train_conditional.py` | 93% |
 | `prep_conditional_data.py` | 88% |
 | `evaluate.py` | 87% |
 | `train.py` | 87% |
@@ -141,10 +154,17 @@ pytest --cov=. --cov-report=term-missing
 
 Phase 4 adds encoder-decoder conditioning for controlled generation:
 
-- **TextEncoder**: Bidirectional transformer encoding input text
+- **TextEncoder**: Bidirectional transformer encoding input text (4 layers)
 - **Cross-Attention**: Decoder attends to encoder output (original Transformer style)
 - **Staged Training**: Train denoiser → freeze → train encoder + cross-attention
-- **Data Pipeline**: Extract (first sentence → rest of paragraph) pairs
+- **Data Pipeline**: Extract (first sentence → rest of story) pairs from TinyStories
+
+**Stage 2 Training Details:**
+- Loads pretrained denoiser (without cross-attention)
+- Creates new decoder with cross-attention enabled
+- Loads compatible weights (self-attention, FFN, embeddings)
+- Freezes decoder except cross-attention layers
+- Trains encoder (10.3M) + cross-attention (3.6M) = 13.8M trainable params
 
 ```python
 from model import create_conditional_model
@@ -165,7 +185,7 @@ model.freeze_decoder()
 ### Near-term (GPU training)
 - [ ] Train larger models (medium 35M, large 60M) with GPU
 - [ ] Experiment with more diffusion steps at inference (200-500)
-- [ ] Train conditional model (first sentence → story continuation)
+- [x] Train conditional model (first sentence → story continuation)
 - [ ] Hyperparameter tuning (learning rate, batch size, warmup)
 
 ### Medium-term (Jetson deployment)

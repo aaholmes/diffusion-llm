@@ -1,5 +1,6 @@
 checkpoints/
 checkpoints_long/*.pt
+checkpoints_conditional/
 .coverage
 data/
 data_full/
