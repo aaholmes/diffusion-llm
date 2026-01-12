@@ -12,8 +12,29 @@ Unlike autoregressive models (GPT-style) that generate text left-to-right, diffu
 - [x] **Phase 2**: Model architecture (bidirectional transformer, diffusion process)
 - [x] **Phase 3**: Training loop (mixed precision, checkpointing, wandb)
 - [x] **Phase 4**: Conditioning architecture (encoder, cross-attention, staged training)
+- [x] **Phase 4.5**: First successful training run on full dataset
 - [ ] **Phase 5**: Jetson optimization
-- [ ] **Phase 6**: Extensions (multimodal, custom CUDA kernels)
+- [ ] **Phase 6**: Extensions (multimodal, LoRA, custom CUDA kernels)
+
+## Training Results
+
+First successful training run on TinyStories (2.1M stories):
+
+| Metric | Value |
+|--------|-------|
+| Model | small (17M params) |
+| Training steps | 12,500 |
+| Final val loss | 3.24 |
+| Final val accuracy | 39.1% |
+| Training time | ~15 hours (CPU) |
+| Overfitting | None (val ≈ train) |
+
+![Training Curves](checkpoints_long/training_curves.png)
+
+**Sample output:**
+> Once upon a time, there was a little ant. He decided to go on the icy leaves around. Suddenly, he bumped from his grass. The door popped, a huge pot came to the cave. The bird looked around and saw a little girl...
+
+The model learns TinyStories vocabulary, grammar, and narrative structure. Coherence is limited by model size (17M) and the parallel generation nature of diffusion models.
 
 ## Quick Start
 
@@ -25,10 +46,26 @@ pip install -r requirements.txt
 python data_prep.py
 
 # Train model
-python train.py --model_config small --max_steps 50000
+python train.py --model_config small --max_steps 10000
+
+# Generate samples
+python generate.py --num_samples 5 --temperature 0.8
 
 # Run tests
 pytest -v
+```
+
+### Long Training Run
+
+For a full training run on the complete TinyStories dataset:
+
+```bash
+# Prepare full dataset (2.1M stories, ~10 min)
+python train_long.py --skip_data_prep  # if data_full/ exists
+python train_long.py                    # full pipeline
+
+# Generate from trained model
+python generate.py --checkpoint checkpoints_long/final.pt
 ```
 
 ## Architecture
@@ -108,6 +145,25 @@ model = create_conditional_model(
 # Stage 2: Freeze decoder, train only encoder + cross-attention
 model.freeze_decoder()
 ```
+
+## Next Steps
+
+### Near-term (GPU training)
+- [ ] Train larger models (medium 35M, large 60M) with GPU
+- [ ] Experiment with more diffusion steps at inference (200-500)
+- [ ] Train conditional model (first sentence → story continuation)
+- [ ] Hyperparameter tuning (learning rate, batch size, warmup)
+
+### Medium-term (Jetson deployment)
+- [ ] ONNX export and TensorRT optimization
+- [ ] Quantization (INT8/FP16) for inference
+- [ ] Memory profiling on Jetson Orin Nano
+- [ ] Benchmark inference latency vs quality tradeoffs
+
+### Long-term (Extensions)
+- [ ] **LoRA for vision**: Add image conditioning with low-rank adapters
+- [ ] **Block Diffusion**: Implement [Block Diffusion](https://arxiv.org/abs/2503.09573) for streaming generation
+- [ ] **Custom CUDA kernels**: Fused attention for faster inference
 
 ## Future: Block Diffusion
 
