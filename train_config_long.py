@@ -37,12 +37,12 @@ class LongTrainConfig:
     # Training - conservative for stability
     batch_size: int = 32
     grad_accum_steps: int = 2  # Effective batch = 64
-    max_steps: int = 25000  # ~20 hours on CPU
+    max_steps: int = 12500  # ~15 hours on CPU
 
     # Learning rate - standard transformer settings
     learning_rate: float = 3e-4
     min_lr_ratio: float = 0.1  # Decay to 10% of max LR
-    warmup_steps: int = 1000  # 4% warmup
+    warmup_steps: int = 500  # 4% warmup
 
     # Regularization - prevent overfitting
     weight_decay: float = 0.1  # Standard for transformers
@@ -59,7 +59,7 @@ class LongTrainConfig:
     checkpoint_dir: str = "checkpoints_long"
 
     # Logging
-    log_every: int = 50
+    log_every: int = 25
     use_wandb: bool = False  # Set True if wandb available
     wandb_project: str = "diffusion-lm-long"
 

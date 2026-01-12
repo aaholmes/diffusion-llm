@@ -215,6 +215,13 @@ class Trainer:
         # Create checkpoint directory
         os.makedirs(self.config.checkpoint_dir, exist_ok=True)
 
+        # Setup CSV logging for metrics
+        self.metrics_path = os.path.join(self.config.checkpoint_dir, "metrics.csv")
+        self._last_train_metrics = {}  # Will be populated during training
+        if not os.path.exists(self.metrics_path):
+            with open(self.metrics_path, "w") as f:
+                f.write("step,train_loss,train_acc,val_loss,val_acc,lr,grad_norm\n")
+
     def get_lr(self, step: int) -> float:
         """
         Compute learning rate with linear warmup and cosine decay.
@@ -478,10 +485,31 @@ class Trainer:
                         lr=f"{lr:.2e}"
                     )
 
+                    # Print metrics (useful for log files)
+                    print(f"Step {self.global_step:>6}: loss={log_metrics['train/loss']:.4f}, "
+                          f"acc={log_metrics['train/accuracy']:.3f}, lr={lr:.2e}, "
+                          f"grad_norm={grad_norm:.2f}, tok/s={tokens_per_sec:.0f}")
+
+                    # Log to CSV (val columns filled in later if this is a val step)
+                    self._last_train_metrics = {
+                        "step": self.global_step,
+                        "train_loss": log_metrics['train/loss'],
+                        "train_acc": log_metrics['train/accuracy'],
+                        "lr": lr,
+                        "grad_norm": grad_norm,
+                    }
+
                     # Log to wandb
                     if self.use_wandb:
                         import wandb
                         wandb.log(log_metrics, step=self.global_step)
+
+                    # Write to CSV if not a validation step (val steps write below)
+                    if self.global_step % self.config.eval_every != 0:
+                        with open(self.metrics_path, "a") as f:
+                            m = self._last_train_metrics
+                            f.write(f"{m['step']},{m['train_loss']:.6f},{m['train_acc']:.6f},,,"
+                                    f"{m['lr']:.2e},{m['grad_norm']:.4f}\n")
 
                 # Reset accumulation
                 accum_metrics = {"loss": 0, "accuracy": 0, "mask_rate": 0}
@@ -516,6 +544,13 @@ class Trainer:
                     if self.use_wandb:
                         import wandb
                         wandb.log(val_metrics, step=self.global_step)
+
+                    # Write to CSV with validation metrics
+                    with open(self.metrics_path, "a") as f:
+                        m = self._last_train_metrics
+                        f.write(f"{m['step']},{m['train_loss']:.6f},{m['train_acc']:.6f},"
+                                f"{val_metrics['val_loss']:.6f},{val_metrics['val_accuracy']:.6f},"
+                                f"{m['lr']:.2e},{m['grad_norm']:.4f}\n")
 
                 # Checkpointing
                 if self.global_step % self.config.save_every == 0:

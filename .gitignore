@@ -1,7 +1,10 @@
 checkpoints/
+checkpoints_long/*.pt
 .coverage
 data/
+data_full/
 PROJECT_PLAN.md
 __pycache__/
 *.pyc
 .pytest_cache/
+*.log

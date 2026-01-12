@@ -12,7 +12,7 @@ Usage:
     python train_long.py --max_steps 1000   # Quick test
     python train_long.py --resume           # Resume from checkpoint
 
-Expected runtime: ~20 hours on CPU, ~2-4 hours on GPU
+Expected runtime: ~15 hours on CPU (12.5k steps), ~30 min on GPU
 """
 
 import argparse
@@ -22,6 +22,10 @@ import time
 from pathlib import Path
 
 import torch
+
+# Optimize CPU threading - 24 threads is optimal for this workload
+# (32 causes contention, 16 leaves performance on the table)
+torch.set_num_threads(24)
 
 from data_prep import DataConfig, main as prepare_data, load_stories, train_tokenizer, tokenize_dataset
 from train import TrainConfig, Trainer
@@ -147,7 +151,13 @@ def generate_samples(checkpoint_path: str, tokenizer_path: str, num_samples: int
     checkpoint = torch.load(checkpoint_path, weights_only=False)
 
     model_config = checkpoint.get("model_config", "small")
-    model = create_model(model_config, vocab_size=8192, max_seq_len=256)
+    # Handle both string config names and ModelConfig objects
+    if isinstance(model_config, str):
+        model = create_model(model_config, vocab_size=8192, max_seq_len=256)
+    else:
+        # It's already a ModelConfig object, use it directly
+        from model import DiffusionTransformer
+        model = DiffusionTransformer(model_config)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
@@ -258,8 +268,8 @@ def main():
 
     # Estimate time
     if not torch.cuda.is_available():
-        # CPU estimate based on small model: ~2.9s/step
-        est_hours = (train_config.max_steps * 2.9) / 3600
+        # CPU estimate based on small model: ~4.3s/step (full training loop)
+        est_hours = (train_config.max_steps * 4.3) / 3600
         print(f"Estimated time (CPU): ~{est_hours:.1f} hours")
     print()
 
