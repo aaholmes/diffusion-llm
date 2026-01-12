@@ -14,6 +14,7 @@ Unlike autoregressive models (GPT-style) that generate text left-to-right, diffu
 - [x] **Phase 4**: Conditioning architecture (encoder, cross-attention, staged training)
 - [x] **Phase 4.5**: First successful training run on full dataset (17M params, 12.5k steps)
 - [x] **Phase 4.6**: Conditional data prep + Stage 2 training script
+- [x] **Phase 4.7**: Infill task data preparation (first + last → middle)
 - [ ] **Phase 5**: Jetson optimization
 - [ ] **Phase 6**: Extensions (multimodal, LoRA, custom CUDA kernels)
 
@@ -135,7 +136,7 @@ pytest -v
 pytest --cov=. --cov-report=term-missing
 ```
 
-**Current coverage: 90% (308 tests passing)**
+**Current coverage: 90% (332 tests passing)**
 
 | Module | Coverage |
 |--------|----------|
@@ -148,6 +149,7 @@ pytest --cov=. --cov-report=term-missing
 | `generate.py` | 95% |
 | `train_conditional.py` | 93% |
 | `prep_conditional_data.py` | 88% |
+| `prep_infill_data.py` | 87% |
 | `evaluate.py` | 87% |
 | `train.py` | 87% |
 
@@ -158,7 +160,9 @@ Phase 4 adds encoder-decoder conditioning for controlled generation:
 - **TextEncoder**: Bidirectional transformer encoding input text (4 layers)
 - **Cross-Attention**: Decoder attends to encoder output (original Transformer style)
 - **Staged Training**: Train denoiser → freeze → train encoder + cross-attention
-- **Data Pipeline**: Extract (first sentence → rest of story) pairs from TinyStories
+- **Data Pipeline**: Extract conditioning pairs from TinyStories
+  - First sentence → rest of story (`prep_conditional_data.py`)
+  - First + last sentence → middle (`prep_infill_data.py`) - better constrained task
 
 **Stage 2 Training Details:**
 - Loads pretrained denoiser (without cross-attention)
@@ -188,6 +192,7 @@ model.freeze_decoder()
 - [ ] Train larger models (medium 35M, large 60M) with GPU
 - [ ] Experiment with more diffusion steps at inference (200-500)
 - [x] Train conditional model (first sentence → story continuation)
+- [ ] Train infill model (first + last sentence → middle)
 - [ ] Hyperparameter tuning (learning rate, batch size, warmup)
 
 ### Medium-term (Jetson deployment)
