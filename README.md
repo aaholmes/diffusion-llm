@@ -135,12 +135,13 @@ pytest -v
 pytest --cov=. --cov-report=term-missing
 ```
 
-**Current coverage: 90% (305 tests passing)**
+**Current coverage: 90% (308 tests passing)**
 
 | Module | Coverage |
 |--------|----------|
 | `diffusion.py` | 100% |
 | `train_config_long.py` | 100% |
+| `train_conditional_overnight.py` | 100% |
 | `generate_conditional.py` | 98% |
 | `model.py` | 97% |
 | `data_prep.py` | 96% |
@@ -163,6 +164,7 @@ Phase 4 adds encoder-decoder conditioning for controlled generation:
 - Loads pretrained denoiser (without cross-attention)
 - Creates new decoder with cross-attention enabled
 - Loads compatible weights (self-attention, FFN, embeddings)
+- Zero-initializes cross-attention output projections (decoder starts identical to pretrained)
 - Freezes decoder except cross-attention layers
 - Trains encoder (10.3M) + cross-attention (3.6M) = 13.8M trainable params
 

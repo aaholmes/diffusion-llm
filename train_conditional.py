@@ -160,11 +160,20 @@ class ConditionalTrainer:
 
         self.decoder.load_state_dict(new_state)
         print(f"  Loaded {len(loaded_keys)} weight tensors from pretrained model")
-        print(f"  New layers (randomly initialized): {len(new_keys)}")
+        print(f"  New layers (cross-attention): {len(new_keys)}")
 
-        # Show which layers are new (cross-attention)
-        cross_attn_keys = [k for k in new_keys if 'cross' in k]
-        print(f"  Cross-attention layers: {len(cross_attn_keys)}")
+        # Zero-initialize cross-attention output projections
+        # This ensures decoder behaves exactly like pretrained model at init
+        # (cross-attention contributes zero, gradually learns to contribute)
+        print("\n  Zero-initializing cross-attention output projections...")
+        with torch.no_grad():
+            for block in self.decoder.blocks:
+                if block.has_cross_attention:
+                    # Zero the output projection so cross-attn initially outputs zeros
+                    nn.init.zeros_(block.cross_attn.out_proj.weight)
+                    if block.cross_attn.out_proj.bias is not None:
+                        nn.init.zeros_(block.cross_attn.out_proj.bias)
+        print("  Cross-attention initialized to output zeros at start")
 
         # Create encoder
         print("\nCreating encoder...")
@@ -552,7 +561,7 @@ class ConditionalTrainer:
                     avg_acc = accum_metrics["accuracy"] / accum_count
 
                     pbar.set_postfix(loss=f"{avg_loss:.4f}", acc=f"{avg_acc:.3f}", lr=f"{lr:.2e}")
-                    print(f"Step {self.global_step}: loss={avg_loss:.4f}, acc={avg_acc:.3f}, lr={lr:.2e}")
+                    print(f"Step {self.global_step}: loss={avg_loss:.4f}, acc={avg_acc:.3f}, lr={lr:.2e}", flush=True)
 
                 accum_metrics = {"loss": 0, "accuracy": 0, "mask_rate": 0}
                 accum_count = 0
@@ -560,12 +569,12 @@ class ConditionalTrainer:
                 # Validation
                 if self.global_step % self.config.eval_every == 0:
                     val_metrics = self.evaluate()
-                    print(f"\n[Val] loss={val_metrics['val_loss']:.4f}, acc={val_metrics['val_accuracy']:.3f}")
+                    print(f"\n[Val] loss={val_metrics['val_loss']:.4f}, acc={val_metrics['val_accuracy']:.3f}", flush=True)
 
                     is_best = val_metrics["val_loss"] < self.best_val_loss
                     if is_best:
                         self.best_val_loss = val_metrics["val_loss"]
-                        print("  New best model!")
+                        print("  New best model!", flush=True)
 
                 # Save
                 if self.global_step % self.config.save_every == 0:
@@ -599,9 +608,10 @@ def main():
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--warmup_steps", type=int, default=500)
 
-    # Checkpointing
+    # Checkpointing & Logging
     parser.add_argument("--eval_every", type=int, default=250)
     parser.add_argument("--save_every", type=int, default=1000)
+    parser.add_argument("--log_every", type=int, default=10)
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints_conditional")
 
     # Hardware
@@ -618,6 +628,7 @@ def main():
         learning_rate=args.learning_rate,
         warmup_steps=args.warmup_steps,
         eval_every=args.eval_every,
+        log_every=args.log_every,
         save_every=args.save_every,
         checkpoint_dir=args.checkpoint_dir,
         use_amp=not args.no_amp,
