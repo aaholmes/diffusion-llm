@@ -3,6 +3,7 @@ checkpoints_long/*.pt
 .coverage
 data/
 data_full/
+data_conditional/
 PROJECT_PLAN.md
 __pycache__/
 *.pyc

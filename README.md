@@ -66,6 +66,16 @@ python train_long.py                    # full pipeline
 
 # Generate from trained model
 python generate.py --checkpoint checkpoints_long/final.pt
+
+# Evaluate model (perplexity, BLEU)
+python evaluate.py --checkpoint checkpoints_long/final.pt
+```
+
+### Conditional Training (Coming Soon)
+
+```bash
+# Prepare paired data (first sentence -> rest of story)
+python prep_conditional_data.py
 ```
 
 ## Architecture
@@ -114,13 +124,17 @@ pytest -v
 pytest --cov=. --cov-report=term-missing
 ```
 
-**Current coverage: 94% (202 tests passing)**
+**Current coverage: 89% (273 tests passing)**
 
 | Module | Coverage |
 |--------|----------|
-| `data_prep.py` | 96% |
-| `model.py` | 97% |
 | `diffusion.py` | 100% |
+| `train_config_long.py` | 100% |
+| `model.py` | 97% |
+| `data_prep.py` | 96% |
+| `generate.py` | 95% |
+| `prep_conditional_data.py` | 88% |
+| `evaluate.py` | 87% |
 | `train.py` | 87% |
 
 ## Conditioning Architecture
