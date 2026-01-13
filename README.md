@@ -102,6 +102,8 @@ python generate_conditional.py \
 
 ### Image Captioning Model
 
+![Image Captioning Architecture](docs/architecture_captioning.png)
+
 **Vision Encoder** (frozen):
 - CLIP ViT-B/32 (pretrained, 50 patches, 768-dim)
 - Extracts rich visual features from images
@@ -119,6 +121,26 @@ python generate_conditional.py \
 - Cross-entropy loss on masked token prediction
 - AdamW optimizer with warmup
 
+### Transformer Block Detail
+
+![Transformer Block](docs/architecture_block.png)
+
+Each transformer block uses pre-norm architecture with:
+- **Self-Attention**: Bidirectional attention over caption tokens
+- **Cross-Attention**: Attends to CLIP image features (K,V from encoder)
+- **Feed-Forward**: Linear → GELU → Linear expansion
+- **Residual connections** around each sub-layer
+
+### Diffusion Process
+
+![Diffusion Process](docs/architecture_diffusion.png)
+
+Generation proceeds by iterative denoising:
+1. Start with all `[MASK]` tokens (t=1.0)
+2. Model predicts token probabilities at each position
+3. Gradually unmask tokens based on confidence
+4. Final caption emerges at t=0.0
+
 ```python
 # Architecture
 image = load_image("photo.jpg")
@@ -133,6 +155,16 @@ for t in timesteps:
     caption_tokens = unmask_some_tokens(logits, t)
 
 caption = tokenizer.decode(caption_tokens)
+```
+
+### Visualize Architecture
+
+```bash
+# Generate architecture diagrams
+python visualize_architecture.py
+
+# Include detailed computation graph
+python visualize_architecture.py --detailed
 ```
 
 ### Text Model (Baseline)
