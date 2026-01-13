@@ -126,6 +126,7 @@ def main():
     parser.add_argument("--steps", type=int, default=50, help="Number of diffusion steps")
     parser.add_argument("--temperature", type=float, default=0.8, help="Sampling temperature")
     parser.add_argument("--clip_model", type=str, default="openai/clip-vit-base-patch32")
+    parser.add_argument("--max_len", type=int, default=None, help="Max caption length (overrides checkpoint config)")
 
     args = parser.parse_args()
 
@@ -141,7 +142,7 @@ def main():
 
     # Load model
     decoder, train_config = load_captioning_model(args.checkpoint, device)
-    max_caption_len = train_config.get('max_caption_len', 128)
+    max_caption_len = args.max_len or train_config.get('max_caption_len', 128)
 
     # Create diffusion
     diffusion = DiscreteDiffusion(

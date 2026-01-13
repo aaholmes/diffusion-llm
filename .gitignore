@@ -1,5 +1,6 @@
 checkpoints/
 checkpoints_long/*.pt
+checkpoints_caption_poc/
 checkpoints_conditional/
 checkpoints_conditional_overnight/
 checkpoints_infill_*/
