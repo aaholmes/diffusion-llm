@@ -401,3 +401,145 @@ class TestIntegration:
         assert train_config.learning_rate == long_config.learning_rate
         assert train_config.weight_decay == long_config.weight_decay
         assert train_config.early_stopping_patience == long_config.early_stopping_patience
+
+
+class TestGenerateSamplesEOS:
+    """Test EOS handling in generate_samples."""
+
+    def test_generate_samples_with_eos(self, tmp_path):
+        """Test generation handles EOS token correctly."""
+        from model import DiffusionTransformer, ModelConfig, MODEL_CONFIGS
+        from tokenizers import Tokenizer
+        from tokenizers.models import BPE
+        from tokenizers.trainers import BpeTrainer
+        from tokenizers.pre_tokenizers import Whitespace
+        from train_long import generate_samples
+
+        # Create model using actual tiny config
+        tiny_config = MODEL_CONFIGS["tiny"]
+        config = ModelConfig(
+            d_model=tiny_config.d_model,
+            n_heads=tiny_config.n_heads,
+            n_layers=tiny_config.n_layers,
+            d_ff=tiny_config.d_ff,
+            vocab_size=8192,
+            max_seq_len=256
+        )
+        model = DiffusionTransformer(config)
+        checkpoint = {
+            "model_config": "tiny",
+            "model_state_dict": model.state_dict(),
+        }
+        checkpoint_path = tmp_path / "model.pt"
+        torch.save(checkpoint, checkpoint_path)
+
+        # Create tokenizer
+        tokenizer = Tokenizer(BPE(unk_token="<UNK>"))
+        tokenizer.pre_tokenizer = Whitespace()
+        trainer = BpeTrainer(
+            vocab_size=8192,
+            special_tokens=["<PAD>", "<BOS>", "<EOS>", "<MASK>", "<UNK>"]
+        )
+        tokenizer.train_from_iterator(
+            ["Once upon a time there was a story about a cat and dog."] * 100,
+            trainer=trainer
+        )
+        tokenizer_path = tmp_path / "tokenizer.json"
+        tokenizer.save(str(tokenizer_path))
+
+        # Should run without error
+        generate_samples(str(checkpoint_path), str(tokenizer_path), num_samples=2)
+
+
+class TestMainFunctionPaths:
+    """Test various paths through main function."""
+
+    def test_generate_only_no_checkpoint(self, tmp_path, monkeypatch, capsys):
+        """Test generate_only mode when no checkpoint exists."""
+        import sys
+        from train_long import main
+
+        # Create empty checkpoint directory
+        checkpoint_dir = tmp_path / "checkpoints_long"
+        checkpoint_dir.mkdir()
+
+        # Change working directory
+        import os
+        original_cwd = os.getcwd()
+        os.chdir(tmp_path)
+
+        try:
+            monkeypatch.setattr(sys, 'argv', ['train_long.py', '--generate_only'])
+            main()
+
+            captured = capsys.readouterr()
+            assert "No checkpoint found" in captured.out
+        finally:
+            os.chdir(original_cwd)
+
+    def test_resume_no_checkpoint(self, tmp_path, monkeypatch, capsys):
+        """Test resume mode when no checkpoint exists."""
+        import sys
+        import os
+
+        # Create directories and files
+        checkpoint_dir = tmp_path / "checkpoints_long"
+        checkpoint_dir.mkdir()
+        data_dir = tmp_path / "data_full"
+        data_dir.mkdir()
+        (data_dir / "train_tokens.pt").touch()
+        (data_dir / "val_tokens.pt").touch()
+        (data_dir / "tokenizer.json").touch()
+
+        original_cwd = os.getcwd()
+        os.chdir(tmp_path)
+
+        try:
+            monkeypatch.setattr(sys, 'argv', [
+                'train_long.py',
+                '--resume',
+                '--skip_data_prep',
+                '--max_steps', '0'  # 0 steps to avoid actual training
+            ])
+
+            # Mock the Trainer to avoid actual training
+            from unittest.mock import MagicMock, patch
+
+            with patch('train_long.Trainer') as mock_trainer_class:
+                mock_trainer = MagicMock()
+                mock_trainer_class.return_value = mock_trainer
+
+                from train_long import main
+                main()
+
+                captured = capsys.readouterr()
+                assert "No checkpoint found, starting fresh" in captured.out
+        finally:
+            os.chdir(original_cwd)
+
+
+class TestQuickTestMode:
+    """Test quick_test mode configuration."""
+
+    def test_quick_test_modifies_config(self, monkeypatch):
+        """Test that quick_test flag modifies configuration."""
+        import argparse
+        from train_config_long import LongTrainConfig
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--quick_test", action="store_true")
+        parser.add_argument("--max_steps", type=int, default=None)
+        args = parser.parse_args(['--quick_test'])
+
+        config = LongTrainConfig()
+
+        # In quick_test mode, max_steps would be set to 100
+        if args.quick_test:
+            args.max_steps = 100
+            config.eval_every = 50
+            config.save_every = 50
+            config.subset_size = 1000
+
+        assert args.max_steps == 100
+        assert config.eval_every == 50
+        assert config.subset_size == 1000

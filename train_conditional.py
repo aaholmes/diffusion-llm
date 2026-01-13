@@ -458,6 +458,11 @@ class ConditionalTrainer:
         torch.save(checkpoint, path)
         print(f"Saved checkpoint: {path}")
 
+        if is_best:
+            best_path = os.path.join(self.config.checkpoint_dir, "best.pt")
+            torch.save(checkpoint, best_path)
+            print(f"Saved best model: {best_path}")
+
     def _load_checkpoint(self, checkpoint_path: str):
         """Load checkpoint to resume training."""
         print(f"\nResuming from checkpoint: {checkpoint_path}")

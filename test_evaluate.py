@@ -312,3 +312,48 @@ class TestIntegration:
         assert "ref_bleu" in gen_results
         assert gen_results["self_bleu"] >= 0
         assert gen_results["ref_bleu"] >= 0
+
+
+class TestMainFull:
+    """Test main function with full evaluation."""
+
+    def test_main_full_evaluation(self, tmp_path, monkeypatch, capsys):
+        """Test main function with both perplexity and generation quality."""
+        import sys
+        from model import create_model
+
+        # Create model checkpoint
+        model = create_model("tiny", vocab_size=8192, max_seq_len=256)
+        checkpoint = {
+            "model_config": "tiny",
+            "model_state_dict": model.state_dict(),
+        }
+        checkpoint_path = tmp_path / "model.pt"
+        torch.save(checkpoint, checkpoint_path)
+
+        # Create validation data
+        val_data = torch.randint(1, 8192, (50, 256))
+        val_data[:, 0] = 1  # BOS
+        val_data[:, -1] = 2  # EOS
+        val_path = tmp_path / "val.pt"
+        torch.save(val_data, val_path)
+
+        # Mock command line args (no --perplexity_only)
+        monkeypatch.setattr(sys, 'argv', [
+            'evaluate.py',
+            '--checkpoint', str(checkpoint_path),
+            '--val_data', str(val_path),
+            '--num_samples', '3',  # Small for speed
+            '--steps', '3',  # Small for speed
+        ])
+
+        from evaluate import main
+        main()
+
+        captured = capsys.readouterr()
+        # Check that full output was generated
+        assert "Perplexity Evaluation" in captured.out
+        assert "Generation Quality Evaluation" in captured.out
+        assert "Self-BLEU" in captured.out
+        assert "Ref-BLEU" in captured.out
+        assert "Summary" in captured.out
