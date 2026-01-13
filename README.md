@@ -19,22 +19,24 @@ Unlike autoregressive models (GPT-style) that generate text left-to-right, diffu
   - [x] First sentence → story continuation
   - [x] First + last sentence → middle (infilling)
   - [x] Resume training from checkpoints
-- [x] **Phase 5**: **Image Captioning** (current)
+- [x] **Phase 5**: **Image Captioning**
   - [x] Synthetic data generation (colored shapes → captions)
   - [x] CLIP vision feature extraction
   - [x] Training script for image→text
   - [x] Generation/demo script
-  - [x] POC training in progress (5000 steps, 56M params)
+  - [x] POC training complete (5000 steps, 56M params, 96.7% accuracy)
+  - [x] Validated on synthetic data (size/color detection working)
+  - [x] COCO data pipeline ready (`prep_coco_data.py`)
+  - [x] ONNX export for Jetson (`export_onnx.py`)
 
 ### 🔄 In Progress
 
-- [ ] **Phase 5.1**: Validate captioning on synthetic data
-- [ ] **Phase 5.2**: Real COCO/Flickr30k data preparation
-- [ ] **Phase 5.3**: Full image captioning training
+- [ ] **Phase 5.2**: Train on real COCO images (10K+ examples)
+- [ ] **Phase 5.3**: Benchmark BLEU/CIDEr scores
 
 ### 🎯 Next Steps
 
-- [ ] **Phase 6**: Jetson optimization (ONNX, TensorRT, quantization)
+- [ ] **Phase 6**: Jetson optimization (TensorRT, quantization)
 - [ ] **Phase 7**: VLA architecture (vision + language + action prediction)
 - [ ] **Phase 8**: Custom CUDA kernels, diffusion optimizations
 
@@ -54,15 +56,42 @@ python train_captioning.py \
 
 # 3. Generate captions from validation set
 python generate_caption.py \
-    --checkpoint checkpoints_caption_poc/best.pt \
+    --checkpoint checkpoints_caption_poc/final.pt \
     --use_val_set \
-    --num_samples 5
+    --num_samples 5 \
+    --max_len 12
 
 # 4. Generate caption from custom image
 python generate_caption.py \
-    --checkpoint checkpoints_caption_poc/best.pt \
+    --checkpoint checkpoints_caption_poc/final.pt \
     --image path/to/image.jpg \
     --num_samples 3
+```
+
+### Real Image Training (COCO)
+
+```bash
+# 1. Download and prepare COCO data (10K images)
+python prep_coco_data.py --num_train 10000 --num_val 1000
+
+# 2. Train on real images
+python train_captioning.py \
+    --data_dir data_coco \
+    --max_steps 20000 \
+    --batch_size 64
+```
+
+### Jetson Deployment
+
+```bash
+# Export model to ONNX
+python export_onnx.py \
+    --checkpoint checkpoints_caption_poc/final.pt \
+    --output models/decoder.onnx \
+    --test --benchmark
+
+# On Jetson: convert to TensorRT (optional, for faster inference)
+# trtexec --onnx=decoder.onnx --saveEngine=decoder.trt --fp16
 ```
 
 ### Text Generation (Baseline)
@@ -182,18 +211,27 @@ python visualize_architecture.py --detailed
 
 ## Training Results
 
-### Image Captioning (In Progress)
+### Image Captioning (Synthetic POC Complete)
 
 | Metric | Value |
 |--------|-------|
 | Model | 6-layer decoder (56M params) |
 | Data | 5000 synthetic images (colored shapes) |
 | Target | "A small red square", "A large blue circle", etc. |
-| Training steps | 5000 (in progress) |
-| Speed | ~3.7 sec/step (CPU) |
-| Estimated time | ~5 hours |
+| Training steps | 5000 |
+| Final accuracy | 96.7% |
+| Training time | ~5 hours (CPU) |
 
-**Synthetic data approach**: Validates architecture quickly before scaling to real images (COCO/Flickr30k).
+**Results**: Model correctly identifies size (large/small) and color with high accuracy. Shape discrimination is limited due to CLIP's training on natural images rather than simple geometric shapes.
+
+**Sample outputs**:
+| Ground Truth | Generated |
+|-------------|-----------|
+| A large orange rectangle | This is a large orange rectangle |
+| There is a small yellow triangle | There is a small yellow rectangle |
+| A small pink circle | There is a small pink rectangle |
+
+**Next step**: Train on COCO real images where CLIP features are more discriminative.
 
 ### Text Generation (Baseline)
 
@@ -234,14 +272,17 @@ pytest --cov=. --cov-report=term-missing
 pytest test_captioning.py -v
 ```
 
-**Current coverage: 94% (342 tests passing)**
+**Current coverage: 94% (421 tests passing)**
 
 | Module | Coverage | Description |
 |--------|----------|-------------|
 | `diffusion.py` | 100% | Core diffusion logic |
 | `generate_caption.py` | 100% | Image caption generation |
+| `visualize_architecture.py` | 100% | Architecture diagrams |
 | `train_config_long.py` | 100% | Config handling |
 | `train_conditional_overnight.py` | 100% | Training scripts |
+| `export_onnx.py` | 99% | ONNX export for Jetson |
+| `prep_coco_data.py` | 99% | COCO data preparation |
 | `prep_caption_synthetic.py` | 99% | Synthetic data generation |
 | `evaluate.py` | 98% | Metrics and evaluation |
 | `generate_conditional.py` | 98% | Text generation |
@@ -279,13 +320,13 @@ Current progress toward VLA:
 
 ### Near-term: Validate Captioning
 1. ✅ Synthetic data POC (5K examples)
-2. [ ] Train to convergence (validate architecture works)
-3. [ ] COCO/Flickr30k real image training (50K+ examples)
+2. ✅ Train to convergence (96.7% accuracy on synthetic)
+3. 🔄 COCO real image training (pipeline ready, data downloading)
 4. [ ] Benchmark BLEU/CIDEr scores
 5. [ ] Qualitative evaluation (human judgment)
 
 ### Medium-term: Optimize for Jetson
-1. [ ] ONNX export with frozen CLIP
+1. ✅ ONNX export (~13ms/step on CPU)
 2. [ ] TensorRT optimization
 3. [ ] INT8/FP16 quantization
 4. [ ] Memory profiling on Jetson Orin Nano
@@ -311,9 +352,14 @@ diffusion-llm/
 ├── generate_caption.py         # Image caption generation
 ├── generate_conditional.py     # Conditional text generation
 ├── prep_caption_synthetic.py   # Synthetic caption data
+├── prep_coco_data.py           # COCO real image data preparation
+├── export_onnx.py              # ONNX export for Jetson deployment
+├── visualize_architecture.py   # Architecture diagram generation
 ├── data_prep.py                # TinyStories data preparation
 ├── evaluate.py                 # Evaluation metrics
-├── test_*.py                   # Test suite (342 tests, 94% coverage)
+├── test_*.py                   # Test suite (421 tests, 94% coverage)
+├── docs/                       # Architecture diagrams
+├── models/                     # Exported ONNX models
 ├── deprecated/                 # Experimental/deprecated code
 ├── checkpoints_caption_poc/    # Captioning checkpoints
 ├── data_captions_synthetic/    # Synthetic image-caption pairs
