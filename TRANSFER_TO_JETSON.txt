@@ -1,0 +1,44 @@
+================================================================================
+QUICK REFERENCE: Files to Transfer to Jetson
+================================================================================
+
+Copy these 4 files to your Jetson Orin Nano:
+
+1. models/caption_poc.onnx               (798KB)
+2. models/caption_poc_config.json        (141B)
+3. data_full/tokenizer.json              (~700KB)
+4. jetson_webcam_demo.py                 (16KB)
+
+Total: ~1.5MB
+
+================================================================================
+Transfer Command (via SCP)
+================================================================================
+
+# Replace <jetson-ip> with your Jetson's IP address
+# Replace <username> with your Jetson username (default: jetson)
+
+scp models/caption_poc.onnx <username>@<jetson-ip>:~/diffusion-demo/
+scp models/caption_poc_config.json <username>@<jetson-ip>:~/diffusion-demo/
+scp data_full/tokenizer.json <username>@<jetson-ip>:~/diffusion-demo/
+scp jetson_webcam_demo.py <username>@<jetson-ip>:~/diffusion-demo/
+
+================================================================================
+Run Command (on Jetson)
+================================================================================
+
+cd ~/diffusion-demo
+
+python3 jetson_webcam_demo.py \
+    --onnx caption_poc.onnx \
+    --config caption_poc_config.json \
+    --tokenizer tokenizer.json \
+    --max_len 12 \
+    --steps 25
+
+Press SPACEBAR to capture and generate caption!
+Press 'q' to quit.
+
+================================================================================
+See JETSON_DEPLOYMENT.md for complete setup instructions
+================================================================================

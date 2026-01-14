@@ -232,6 +232,8 @@ def main():
 
     # Load model
     decoder, config = load_decoder(args.checkpoint)
+    checkpoint = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
+    train_config = checkpoint.get('train_config', {})
 
     print(f"\nModel config:")
     print(f"  d_model: {config.d_model}")
@@ -245,6 +247,23 @@ def main():
         seq_len=args.seq_len,
         opset_version=args.opset,
     )
+
+    # Save config JSON for inference
+    config_path = args.output.replace('.onnx', '_config.json')
+    config_dict = {
+        'd_model': config.d_model,
+        'n_layers': config.n_layers,
+        'n_heads': config.n_heads,
+        'vocab_size': config.vocab_size,
+        'max_seq_len': config.max_seq_len,
+        'dropout': config.dropout,
+        'max_caption_len': train_config.get('max_caption_len', args.seq_len),
+    }
+
+    import json
+    with open(config_path, 'w') as f:
+        json.dump(config_dict, f, indent=2)
+    print(f"\n  Saved config to: {config_path}")
 
     # Verify
     if args.test or args.benchmark:

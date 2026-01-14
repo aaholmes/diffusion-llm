@@ -7,6 +7,8 @@ checkpoints_conditional_overnight/
 checkpoints_infill_*/
 coverage.json
 .coverage
+*.py,cover
+htmlcov/
 data/
 data_full/
 data_coco/
