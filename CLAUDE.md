@@ -11,7 +11,9 @@ This repository implements a **discrete diffusion language model** from scratch,
 - Custom CUDA kernels for Jetson optimization
 - Full pipeline: tokenization → training → inference → edge deployment
 
-Target model size: 25-80M parameters, trained on TinyStories dataset.
+Target model sizes:
+- **Text generation**: 25-80M parameters, trained on TinyStories dataset
+- **Image captioning**: 100-150M parameters, trained on COCO (target: ~120 CIDEr, matching DDCap)
 
 ## Key Commands
 
@@ -283,14 +285,91 @@ When implementing new features:
 4. **Inference optimizations** go in respective files (`generate.py`, `inference_jetson.py`)
 5. **Keep configs in dictionaries** for easy experimentation (see MODEL_CONFIGS in `model.py`)
 
+### DDCap Implementation Guide
+
+We are implementing techniques from [DDCap](https://arxiv.org/abs/2211.11694) to achieve competitive CIDEr scores (~120-125). Target: **best edge-deployable discrete diffusion captioner**.
+
+**1. Concentrated Attention Mask** (in `model.py` TransformerBlock):
+```python
+# During self-attention, modify the attention mask:
+# - Real tokens can attend to real tokens only (ignore [MASK])
+# - [MASK] tokens can attend to real tokens only (ignore other [MASK])
+# This prevents noise from corrupting predictions
+def get_concentrated_mask(tokens, mask_token_id):
+    is_mask = (tokens == mask_token_id)
+    # Real tokens: mask out positions where key is [MASK]
+    # [MASK] tokens: mask out positions where key is also [MASK]
+    attn_mask = is_mask.unsqueeze(1) & is_mask.unsqueeze(2)  # [B, Q, K]
+    return attn_mask  # True = ignore this position
+```
+
+**2. Best-First Inference** (in `diffusion.py` sampling):
+```python
+# At each step, lock in the top-K most confident predictions
+# Never re-mask tokens that have been "committed"
+# K decreases as t → 0 (more tokens get locked in)
+def best_first_sample(logits, current_tokens, t, mask_id):
+    probs = F.softmax(logits, dim=-1)
+    confidence = probs.max(dim=-1).values
+    # Sort by confidence, keep top-K unmasked
+    k = int((1 - t) * seq_len)  # More locked as t decreases
+    top_k_indices = confidence.topk(k).indices
+    # These positions are "committed" - don't re-mask
+```
+
+**3. Length Prediction** (in `model.py`):
+```python
+# Add MLP head to predict caption length from image [CLS] token
+self.length_predictor = nn.Sequential(
+    nn.Linear(d_model, d_model),
+    nn.GELU(),
+    nn.Linear(d_model, max_caption_len)  # Predict length as classification
+)
+# Use predicted length to initialize correct number of [MASK] tokens
+```
+
+**4. Image-Free Training** (in `train_captioning.py`):
+```python
+# 20% of batches: replace image features with learned embeddings
+# This improves text fluency by forcing model to learn language patterns
+if random.random() < 0.2:
+    image_features = self.null_image_embedding.expand(batch_size, -1, -1)
+```
+
+**Implementation Priority:**
+1. First: Concentrated attention mask (biggest gain, ~3-5 CIDEr)
+2. Second: Best-first inference (inference-only change, +2-3 CIDEr)
+3. Third: Length prediction (requires model change, +1-2 CIDEr)
+4. Fourth: Image-free training (training change, +1-2 CIDEr)
+
+### CIDEr Evaluation
+
+Use `pycocoevalcap` for official COCO metrics:
+```bash
+pip install pycocoevalcap
+```
+
+```python
+from pycocoevalcap.cider.cider import Cider
+from pycocoevalcap.bleu.bleu import Bleu
+
+# Format: {image_id: [caption1, caption2, ...]}
+gts = {img_id: reference_captions for ...}
+res = {img_id: [generated_caption] for ...}
+
+cider = Cider()
+score, scores = cider.compute_score(gts, res)
+print(f"CIDEr: {score * 100:.1f}")
+```
+
 ### Extension Ideas
 
-Based on PROJECT_PLAN.md, potential extensions include:
+Future extensions after DDCap implementation:
 
-1. **Multimodal conditioning**: Use Jetson camera + CLIP embeddings to condition generation on images
-2. **Continuous embedding diffusion**: Diffuse in embedding space instead of discrete tokens (research direction)
-3. **Constrained generation**: Add hard constraints during sampling (syntax checking, type correctness, etc.)
-4. **Alternative noise schedules**: Experiment with different mask_rate functions
+1. **CIDEr-D optimization**: REINFORCE with CIDEr reward (+10-15 points but slower training)
+2. **Larger vision encoder**: CLIP ViT-L/14 instead of ViT-B/32 (better features, more memory)
+3. **Continuous embedding diffusion**: Diffuse in embedding space instead of discrete tokens
+4. **Constrained generation**: Add hard constraints during sampling
 5. **Hierarchical diffusion**: Diffuse coarse structure first, then fine details
 
 ### Performance Benchmarking

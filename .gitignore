@@ -9,6 +9,7 @@ coverage.json
 .coverage
 data/
 data_full/
+data_coco/
 data_coco_cache/
 data_coco_test/
 data_conditional/

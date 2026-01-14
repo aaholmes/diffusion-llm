@@ -31,14 +31,27 @@ Unlike autoregressive models (GPT-style) that generate text left-to-right, diffu
 
 ### 🔄 In Progress
 
-- [ ] **Phase 5.2**: Train on real COCO images (10K+ examples)
-- [ ] **Phase 5.3**: Benchmark BLEU/CIDEr scores
+- [ ] **Phase 5.2**: Train on real COCO images (118K examples)
+- [ ] **Phase 5.3**: Benchmark BLEU/CIDEr scores (target: ~120 CIDEr)
+- [ ] **Phase 5.4**: Implement DDCap techniques for competitive performance
 
 ### 🎯 Next Steps
 
+- [ ] **Phase 5.5**: Scale to 150M params (xlarge config) for quality
+- [ ] **Phase 5.6**: CIDEr-D optimization via REINFORCE (optional +10-15 points)
 - [ ] **Phase 6**: Jetson optimization (TensorRT, quantization)
 - [ ] **Phase 7**: VLA architecture (vision + language + action prediction)
 - [ ] **Phase 8**: Custom CUDA kernels, diffusion optimizations
+
+### 🎯 Performance Targets
+
+| Milestone | CIDEr Target | Status |
+|-----------|--------------|--------|
+| Synthetic POC | N/A (96.7% acc) | ✅ Done |
+| COCO Baseline | 100-110 | 🔄 Next |
+| With DDCap techniques | 115-120 | Planned |
+| Match DDCap paper | ~125 | Stretch |
+| Best edge diffusion captioner | 120+ on Jetson | Goal |
 
 ## Quick Start
 
@@ -209,6 +222,24 @@ python visualize_architecture.py --detailed
 - Forward process: progressively mask tokens
 - Reverse process: iteratively unmask via model predictions
 
+### DDCap Techniques (Planned)
+
+Based on [DDCap](https://arxiv.org/abs/2211.11694) which achieves ~125 CIDEr with discrete diffusion:
+
+| Technique | Description | Status | Expected Gain |
+|-----------|-------------|--------|---------------|
+| **Concentrated Attention Mask** | Text tokens ignore [MASK] during self-attention; [MASK] tokens ignore other [MASK] tokens | Planned | +3-5 CIDEr |
+| **Best-First Inference** | Lock in top-K confident predictions each step, never re-mask them | Planned | +2-3 CIDEr |
+| **Length Prediction** | MLP predicts caption length from [CLS] before generation | Planned | +1-2 CIDEr |
+| **Image-Free Training** | 20% of batches use learned embeddings instead of images | Planned | +1-2 CIDEr |
+| **Direct x₀ Prediction** | Predict clean tokens directly (not noise) | ✅ Already used | Baseline |
+
+**Why these help:**
+- Concentrated attention prevents noise from corrupting good predictions
+- Best-first avoids "contamination" where confident tokens get re-masked
+- Length prediction eliminates padding artifacts
+- Image-free training improves text fluency/grammar
+
 ## Training Results
 
 ### Image Captioning (Synthetic POC Complete)
@@ -318,12 +349,13 @@ Current progress toward VLA:
 
 ## Roadmap to Deployment
 
-### Near-term: Validate Captioning
-1. ✅ Synthetic data POC (5K examples)
-2. ✅ Train to convergence (96.7% accuracy on synthetic)
-3. 🔄 COCO real image training (pipeline ready, data downloading)
-4. [ ] Benchmark BLEU/CIDEr scores
-5. [ ] Qualitative evaluation (human judgment)
+### Near-term: Competitive Captioning (Phase 5)
+1. ✅ Synthetic data POC (5K examples, 96.7% accuracy)
+2. 🔄 COCO baseline (118K images, 56M params) → target 100-110 CIDEr
+3. [ ] Implement DDCap techniques (concentrated attention, best-first)
+4. [ ] Scale to 150M params (xlarge config) → target 115-120 CIDEr
+5. [ ] Benchmark with official COCO eval (pycocoevalcap)
+6. [ ] Optional: CIDEr-D optimization via REINFORCE → +10-15 CIDEr
 
 ### Medium-term: Optimize for Jetson
 1. ✅ ONNX export (~13ms/step on CPU)
@@ -373,9 +405,16 @@ diffusion-llm/
 - [D3PM](https://arxiv.org/abs/2107.03006) - Discrete Denoising Diffusion
 - [Diffusion-LM](https://arxiv.org/abs/2205.14217) - Continuous diffusion for text
 
+**Diffusion Image Captioning** (primary references for this project):
+- [DDCap](https://arxiv.org/abs/2211.11694) - Discrete diffusion for captioning (~125 CIDEr, 280M params)
+- [LaDiC](https://arxiv.org/abs/2404.10763) - Latent diffusion captioner (~126 CIDEr, SOTA for diffusion)
+- [SST](https://arxiv.org/abs/2512.10038) - Show, Suggest and Tell hybrid approach
+
 **Vision-Language Models**:
 - [Flamingo](https://arxiv.org/abs/2204.14198) - Few-shot vision-language learning
 - [CLIP](https://arxiv.org/abs/2103.00020) - Contrastive vision-language pretraining
+- [BLIP](https://arxiv.org/abs/2201.12086) - Bootstrapped captioning with CapFilt
+- [BLIP-2](https://arxiv.org/abs/2301.12597) - Q-Former bridge to frozen LLMs
 - [CoCa](https://arxiv.org/abs/2205.01917) - Contrastive captioning
 
 **VLA Models**:
