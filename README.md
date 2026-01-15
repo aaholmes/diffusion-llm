@@ -470,9 +470,9 @@ If you use this code, please cite:
 
 ```bibtex
 @software{diffusion_llm_2026,
-  author = {Your Name},
+  author = {Adam A Holmes},
   title = {diffusion-llm: Discrete Diffusion for Image Captioning and VLA},
   year = {2026},
-  url = {https://github.com/yourusername/diffusion-llm}
+  url = {https://github.com/aaholmes/diffusion-llm}
 }
 ```

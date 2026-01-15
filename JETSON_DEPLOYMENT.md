@@ -97,7 +97,7 @@ scp jetson_webcam_demo.py jetson@<jetson-ip>:~/diffusion-demo/
 **Option 3: Git Clone (if repository is public)**
 ```bash
 # On Jetson: clone the repo
-git clone <your-repo-url>
+git clone https://github.com/aaholmes/diffusion-llm.git
 cd diffusion-llm
 
 # Download models separately if not in git
