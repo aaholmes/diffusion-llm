@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This repository implements a **discrete diffusion language model** from scratch, trained on desktop GPU (RTX 5060 Ti 16GB) and deployed to Jetson Orin Nano for edge inference. The project demonstrates:
+This repository implements a **discrete diffusion language model** from scratch, trained on desktop GPU and deployed to Jetson Orin Nano for edge inference. The project demonstrates:
 
 - Bidirectional transformer architecture for discrete diffusion
 - MDLM-style masking/unmasking diffusion process

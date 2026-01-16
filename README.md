@@ -328,7 +328,7 @@ pytest test_captioning.py -v
 
 ## Hardware Targets
 
-- **Training**: CPU (current), Desktop GPU (future - RTX 5060 Ti 16GB)
+- **Training**: CPU (current), Desktop GPU (future)
 - **Inference**: Jetson Orin Nano 8GB (target deployment)
 
 ## Path to VLA (Vision-Language-Action)
