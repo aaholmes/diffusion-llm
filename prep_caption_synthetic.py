@@ -154,9 +154,9 @@ def main():
                 outputs = vision_model(pixel_values)
                 image_features = outputs.last_hidden_state.squeeze(0).cpu()
 
-            # Tokenize caption
+            # Tokenize caption (tokenizer already adds BOS/EOS)
             encoded = tokenizer.encode(caption_text)
-            caption_ids = [bos_id] + encoded.ids + [eos_id]
+            caption_ids = encoded.ids  # Don't add BOS/EOS - tokenizer handles it
 
             # Pad caption
             if len(caption_ids) > args.max_caption_len:
