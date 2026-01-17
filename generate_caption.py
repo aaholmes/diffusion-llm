@@ -74,6 +74,9 @@ def generate_caption(
     batch_size = image_features.shape[0]
     vocab_size = decoder.vocab_size
 
+    # Move image features to device
+    image_features = image_features.to(device)
+
     # Create attention mask for image features (all valid)
     image_mask = torch.ones(image_features.shape[:2], device=device)
 

@@ -31,9 +31,13 @@ Unlike autoregressive models (GPT-style) that generate text left-to-right, diffu
 
 ### 🔄 In Progress
 
-- [ ] **Phase 5.2**: Train on real COCO images (118K examples)
-- [ ] **Phase 5.3**: Benchmark BLEU/CIDEr scores (target: ~120 CIDEr)
-- [ ] **Phase 5.4**: Implement DDCap techniques for competitive performance
+- [ ] **Phase 5.2**: Debug discrete diffusion token generation issues
+  - ✅ Implemented autoregressive baseline for comparison
+  - ✅ Identified token distribution collapse in diffusion model
+  - [ ] Fix diffusion sampling to match autoregressive quality
+- [ ] **Phase 5.3**: Train on real COCO images (118K examples)
+- [ ] **Phase 5.4**: Benchmark BLEU/CIDEr scores (target: ~120 CIDEr)
+- [ ] **Phase 5.5**: Implement DDCap techniques for competitive performance
 
 ### 🎯 Next Steps
 
@@ -253,16 +257,20 @@ Based on [DDCap](https://arxiv.org/abs/2211.11694) which achieves ~125 CIDEr wit
 | Final accuracy | 96.7% |
 | Training time | ~5 hours (CPU) |
 
-**Results**: Model correctly identifies size (large/small) and color with high accuracy. Shape discrimination is limited due to CLIP's training on natural images rather than simple geometric shapes.
+**Results**:
+- **Diffusion model**: Exhibits token distribution collapse, generating character-level tokens instead of word tokens (gibberish output)
+- **Autoregressive baseline**: Works correctly, achieving ~80% token accuracy and producing coherent captions
 
-**Sample outputs**:
-| Ground Truth | Generated |
-|-------------|-----------|
-| A large orange rectangle | This is a large orange rectangle |
-| There is a small yellow triangle | There is a small yellow rectangle |
-| A small pink circle | There is a small pink rectangle |
+**Sample outputs (Synthetic dataset)**:
+| Ground Truth | Diffusion (Failed) | Autoregressive (Working) |
+|-------------|-------------------|--------------------------|
+| A large orange rectangle | HLERSTHE... [gibberish] | A large orange square on a white background |
+| There is a small yellow triangle | RETOTetWN... [gibberish] | A small yellow triangle |
+| A small pink circle | NIWIIO... [gibberish] | A small pink circle on a white background |
 
-**Next step**: Train on COCO real images where CLIP features are more discriminative.
+**Next steps**:
+1. Fix diffusion sampling to match autoregressive quality
+2. Train on COCO real images where CLIP features are more discriminative
 
 ### Text Generation (Baseline)
 
@@ -303,7 +311,7 @@ pytest --cov=. --cov-report=term-missing
 pytest test_captioning.py -v
 ```
 
-**Current coverage: 94% (421 tests passing)**
+**Current coverage: 91% (462 tests passing)**
 
 | Module | Coverage | Description |
 |--------|----------|-------------|
@@ -312,19 +320,25 @@ pytest test_captioning.py -v
 | `visualize_architecture.py` | 100% | Architecture diagrams |
 | `train_config_long.py` | 100% | Config handling |
 | `train_conditional_overnight.py` | 100% | Training scripts |
+| `compare_models.py` | 100% | Autoregressive vs diffusion comparison |
+| `eval_autoregressive.py` | 100% | Autoregressive model evaluation |
+| `model_autoregressive.py` | 100% | Autoregressive transformer architecture |
 | `export_onnx.py` | 99% | ONNX export for Jetson |
 | `prep_coco_data.py` | 99% | COCO data preparation |
 | `prep_caption_synthetic.py` | 99% | Synthetic data generation |
+| `jetson_webcam_demo.py` | 99% | Jetson Orin webcam demo |
 | `evaluate.py` | 98% | Metrics and evaluation |
 | `generate_conditional.py` | 98% | Text generation |
 | `model.py` | 97% | Transformer architecture |
 | `data_prep.py` | 96% | Data processing |
 | `generate.py` | 95% | Unconditional generation |
-| `train_long.py` | 93% | Long training runs |
-| `train_captioning.py` | 91% | Image captioning training |
+| `train_long.py` | 92% | Long training runs |
+| `train_captioning.py` | 92% | Image captioning training |
 | `train_conditional.py` | 89% | Conditional training |
 | `prep_conditional_data.py` | 88% | Data preparation |
 | `train.py` | 87% | Main training loop |
+| `train_autoregressive.py` | 72% | Autoregressive training loop |
+| `evaluate_captioning.py` | 54% | COCO metrics evaluation (requires pycocoevalcap) |
 
 ## Hardware Targets
 

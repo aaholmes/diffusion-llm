@@ -241,7 +241,8 @@ class TestCaptionTraining:
         assert lr_0 == 0.0
         assert 0 < lr_50 < config.learning_rate
         assert lr_100 == config.learning_rate
-        assert lr_200 == config.learning_rate
+        # After warmup, cosine decay has begun
+        assert 0 < lr_200 < config.learning_rate
 
 
 class TestCaptionGeneration:

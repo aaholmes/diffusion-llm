@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import json
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,13 +35,13 @@ class CaptionTrainConfig:
 
     # Model - decoder only (encoder features pre-extracted)
     decoder_config: str = "small"
-    decoder_n_layers: int = 6
+    decoder_n_layers: int = 8  # Scaled from 6 → 8 for better quality
 
     # Training
     batch_size: int = 64
-    max_steps: int = 5000
+    max_steps: int = 20000  # ~128 epochs through COCO 10K dataset
     learning_rate: float = 3e-4
-    warmup_steps: int = 500
+    warmup_steps: int = 1000  # Increased for longer training
     eval_every: int = 200
     save_every: int = 1000
     log_every: int = 50
@@ -108,10 +109,23 @@ class CaptionTrainer:
         )
 
         self.decoder = DiffusionTransformer(decoder_config)
+
+        # Zero-initialize cross-attention output projections for training stability
+        # This ensures cross-attention starts by contributing zero (identity-like)
+        # and gradually learns to incorporate image features
+        print("\nZero-initializing cross-attention output projections...")
+        with torch.no_grad():
+            for block in self.decoder.blocks:
+                if block.has_cross_attention:
+                    nn.init.zeros_(block.cross_attn.out_proj.weight)
+                    if block.cross_attn.out_proj.bias is not None:
+                        nn.init.zeros_(block.cross_attn.out_proj.bias)
+        print("Cross-attention initialized to output zeros initially")
+
         self.decoder.to(self.device)
 
-        print(f"Decoder: {decoder_config.n_layers} layers, d_model={decoder_config.d_model}")
-        print(f"Cross-attention: Enabled")
+        print(f"\nDecoder: {decoder_config.n_layers} layers, d_model={decoder_config.d_model}")
+        print(f"Cross-attention: Enabled (zero-initialized)")
 
         # Count parameters
         decoder_params = sum(p.numel() for p in self.decoder.parameters())
@@ -178,10 +192,25 @@ class CaptionTrainer:
         self.scaler = torch.amp.GradScaler('cuda', enabled=self.config.use_amp)
 
     def get_lr(self, step: int) -> float:
-        """Learning rate schedule with warmup."""
+        """Learning rate schedule with warmup and cosine decay.
+
+        Warmup: 0 → max_lr over warmup_steps
+        Cosine decay: max_lr → min_lr (10% of max) over remaining steps
+        """
+        max_lr = self.config.learning_rate
+        min_lr = max_lr * 0.1  # Decay to 10% of max LR
+
+        # Warmup phase
         if step < self.config.warmup_steps:
-            return self.config.learning_rate * step / self.config.warmup_steps
-        return self.config.learning_rate
+            return max_lr * step / self.config.warmup_steps
+
+        # Cosine decay phase
+        progress = (step - self.config.warmup_steps) / (self.config.max_steps - self.config.warmup_steps)
+        progress = min(progress, 1.0)  # Clamp to [0, 1]
+
+        # Cosine annealing from max_lr to min_lr
+        cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+        return min_lr + (max_lr - min_lr) * cosine_decay
 
     def train_step(self, batch):
         """Single training step."""
@@ -350,13 +379,13 @@ def main():
 
     # Model
     parser.add_argument("--decoder_config", type=str, default="small")
-    parser.add_argument("--decoder_n_layers", type=int, default=6)
+    parser.add_argument("--decoder_n_layers", type=int, default=8)
 
     # Training
     parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--max_steps", type=int, default=5000)
+    parser.add_argument("--max_steps", type=int, default=20000)
     parser.add_argument("--learning_rate", type=float, default=3e-4)
-    parser.add_argument("--warmup_steps", type=int, default=500)
+    parser.add_argument("--warmup_steps", type=int, default=1000)
     parser.add_argument("--eval_every", type=int, default=200)
     parser.add_argument("--save_every", type=int, default=1000)
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints_caption")

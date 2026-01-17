@@ -321,6 +321,12 @@ class DiscreteDiffusion:
         """
         model.eval()
 
+        # Move encoder output to device if provided
+        if encoder_output is not None:
+            encoder_output = encoder_output.to(device)
+        if encoder_attention_mask is not None:
+            encoder_attention_mask = encoder_attention_mask.to(device)
+
         # Handle prompt (for prefix-style conditioning)
         if prompt is not None:
             prompt_len = prompt.shape[1]

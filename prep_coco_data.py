@@ -167,15 +167,13 @@ def tokenize_captions(
     all_tokens = []
 
     for caption in tqdm(captions, desc="Tokenizing captions"):
-        # Tokenize
+        # Tokenize (tokenizer already adds BOS/EOS)
         encoded = tokenizer.encode(caption)
         tokens = encoded.ids
 
-        # Add BOS/EOS
-        tokens = [bos_id] + tokens + [eos_id]
-
         # Truncate or pad
         if len(tokens) > max_len:
+            # Keep EOS at the end when truncating
             tokens = tokens[:max_len-1] + [eos_id]
         else:
             tokens = tokens + [pad_id] * (max_len - len(tokens))
@@ -243,10 +241,13 @@ def main():
 
     # Step 3: Sample subset
     print("\nStep 3: Sampling subset...")
-    train_image_ids = random.sample(list(train_captions.keys()),
-                                     min(args.num_train, len(train_captions)))
-    val_image_ids = random.sample(list(val_captions.keys()),
-                                   min(args.num_val, len(val_captions)))
+
+    # Handle -1 as "use all"
+    num_train = len(train_captions) if args.num_train == -1 else min(args.num_train, len(train_captions))
+    num_val = len(val_captions) if args.num_val == -1 else min(args.num_val, len(val_captions))
+
+    train_image_ids = random.sample(list(train_captions.keys()), num_train)
+    val_image_ids = random.sample(list(val_captions.keys()), num_val)
     print(f"  Selected {len(train_image_ids)} train, {len(val_image_ids)} val images")
 
     # Step 4: Download images
