@@ -151,24 +151,23 @@ class ModelConfig:
 
 
 # Predefined model configurations
-# Jetson latency estimates assume FP16, 15 diffusion steps
 MODEL_CONFIGS = {
-    "tiny": ModelConfig(      # ~7.6M params, ~0.2s on Jetson
+    "tiny": ModelConfig(      # ~7.6M params
         d_model=256, n_heads=4, n_layers=4, d_ff=1024,
     ),
-    "small": ModelConfig(     # ~17M params, ~0.4s on Jetson
+    "small": ModelConfig(     # ~17M params
         d_model=384, n_heads=6, n_layers=6, d_ff=1536,
     ),
-    "medium": ModelConfig(    # ~34M params, ~0.6s on Jetson
+    "medium": ModelConfig(    # ~34M params
         d_model=512, n_heads=8, n_layers=8, d_ff=2048,
     ),
-    "large": ModelConfig(     # ~61M params, ~0.8s on Jetson
+    "large": ModelConfig(     # ~61M params
         d_model=640, n_heads=10, n_layers=10, d_ff=2560,
     ),
-    "xlarge": ModelConfig(    # ~110M params, ~1.2s on Jetson - recommended
+    "xlarge": ModelConfig(    # ~110M params
         d_model=768, n_heads=12, n_layers=12, d_ff=3072,
     ),
-    "xxlarge": ModelConfig(   # ~250M params, ~2.0s on Jetson - maximum
+    "xxlarge": ModelConfig(   # ~250M params
         d_model=1024, n_heads=16, n_layers=16, d_ff=4096,
     ),
 }

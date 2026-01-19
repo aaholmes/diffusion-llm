@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Export the captioning model to ONNX format for Jetson deployment.
+Export the captioning model to ONNX format for optimized inference.
 
 Usage:
     # Export decoder only (CLIP runs separately)
