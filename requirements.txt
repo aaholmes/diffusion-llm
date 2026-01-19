@@ -4,6 +4,10 @@ torch>=2.0.0
 # Data loading and tokenization
 datasets>=2.14.0
 tokenizers>=0.15.0
+transformers>=4.30.0
+
+# Image processing
+pillow>=9.0.0
 
 # Training utilities
 wandb>=0.15.0
@@ -14,6 +18,9 @@ einops>=0.7.0
 
 # Optional: for evaluation
 numpy>=1.24.0
+
+# ONNX export
+onnx>=1.14.0
 
 # Testing
 pytest>=7.0.0
