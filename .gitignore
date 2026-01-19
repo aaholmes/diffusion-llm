@@ -17,3 +17,4 @@ __pycache__/
 nohup.out
 *.sh
 debug_generation.py
+CLAUDE.md
