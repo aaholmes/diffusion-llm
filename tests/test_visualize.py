@@ -7,6 +7,9 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+# Skip entire module if graphviz is not available
+pytest.importorskip("graphviz", reason="graphviz required for visualization tests")
+
 
 class TestCreateHighLevelDiagram:
     """Tests for high-level diagram creation."""

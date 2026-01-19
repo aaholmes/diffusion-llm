@@ -338,7 +338,10 @@ class TestCaptionIntegration:
         features = torch.randn(num_examples, seq_len, feature_dim)
 
         # Generate simple captions
+        import os
         from tokenizers import Tokenizer
+        if not os.path.exists("data_full/tokenizer.json"):
+            pytest.skip("data_full/tokenizer.json not available")
         tokenizer = Tokenizer.from_file("data_full/tokenizer.json")
         pad_id, bos_id, eos_id = 0, 1, 2
 
@@ -683,6 +686,10 @@ class TestCaptionTrainingExtended:
         assert 'train_config' in checkpoint
 
 
+@pytest.mark.skipif(
+    not os.path.exists("data_full/tokenizer.json"),
+    reason="data_full/tokenizer.json not available"
+)
 class TestGenerateCaptionMain:
     """Test the generate_caption.py main function."""
 
@@ -811,6 +818,10 @@ class TestGenerateCaptionMain:
                 assert "Generated Captions:" in captured.out
 
 
+@pytest.mark.skipif(
+    not os.path.exists("data_full/tokenizer.json"),
+    reason="data_full/tokenizer.json not available"
+)
 class TestPrepSyntheticMain:
     """Test prep_caption_synthetic.py main function."""
 

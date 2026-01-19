@@ -5,6 +5,9 @@ import tempfile
 import pytest
 import torch
 
+# Skip entire module if onnxscript is not available (required by torch.onnx.export)
+pytest.importorskip("onnxscript", reason="onnxscript required for ONNX export tests")
+
 from src.core.model import DiffusionTransformer, ModelConfig
 from src.deployment.export_onnx import (
     DecoderWrapper,
