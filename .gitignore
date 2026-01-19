@@ -16,7 +16,7 @@ coverage.json
 .coverage
 *.py,cover
 htmlcov/
-data/
+/data/
 data_full/
 data_coco/
 data_coco_cache/
@@ -27,7 +27,7 @@ data_conditional/
 data_infill/
 data_captions_synthetic/
 eval_results*/
-models/
+/models/
 PROJECT_PLAN.md
 __pycache__/
 *.pyc
