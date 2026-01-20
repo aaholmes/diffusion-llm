@@ -19,9 +19,24 @@ Standard:  position = "cat"
 SDD:       position = [(0.6, "cat"), (0.3, "dog"), (0.1, "pet")]
 ```
 
-The idea is to enable smooth probability transitions during denoising rather than abrupt token swaps.
+Mathematically: `position_i = Σ_{j=1}^{k} prob_ij × embedding_j`
 
-**Architecture:** Bilateral attention with intra-position (candidates compete) and inter-position (context propagates) attention.
+**Key Design Choices:**
+
+| Decision | Rationale |
+|----------|-----------|
+| k=8 candidates | Full vocab (8192) intractable; k=8 captures uncertainty tractably |
+| Coarse-grained probs | Probs are true softmax values (sum < 1), not renormalized over k |
+| 1/vocab_size at max noise | Represents true uncertainty over full vocabulary |
+| Three noise mechanisms | Prob flattening + embedding noise + candidate swapping |
+| No re-noising in sampling | DDIM-style deterministic; re-noising destroys predictions |
+
+**Probability Semantics:** At maximum noise, each of k candidates has probability `1/vocab_size` (not `1/k`). This "coarse-grained" interpretation means we're sampling k tokens from a uniform distribution over the full vocabulary, preserving the true softmax semantics from `denoise_step`.
+
+**Architecture:** Bilateral attention preserving [B, L, k, D] throughout:
+- **Intra-position**: k×k attention (candidates compete, prob-biased)
+- **Inter-position**: L×L attention on pooled representations (context propagates)
+- **Learned readout**: Soft attention over k → single output per position
 
 ## Preliminary Results
 
