@@ -199,8 +199,9 @@ class SparseDiffusion(nn.Module):
         # Look up their embeddings
         embeds = self.embedding_table(indices)  # [batch, seq, k, embed_dim]
 
-        # Uniform probabilities
-        probs = torch.ones(batch_size, seq_len, k, device=device) / k
+        # Uniform probabilities (coarse-grained: each token has 1/vocab_size probability,
+        # representing maximum uncertainty over the full vocabulary)
+        probs = torch.ones(batch_size, seq_len, k, device=device) / vocab_size
 
         return SparseState(probs=probs, embeds=embeds, indices=indices)
 
@@ -230,8 +231,9 @@ class SparseDiffusion(nn.Module):
         batch_size, seq_len, k = state.probs.shape
         device = state.device
 
-        # 1. Mix probabilities toward uniform
-        uniform_prob = 1.0 / k
+        # 1. Mix probabilities toward uniform (coarse-grained: uniform means 1/vocab_size,
+        # representing maximum uncertainty over the full vocabulary)
+        uniform_prob = 1.0 / self.config.vocab_size
         noisy_probs = (1 - noise_level) * state.probs + noise_level * uniform_prob
 
         # 2. Add Gaussian noise to embeddings

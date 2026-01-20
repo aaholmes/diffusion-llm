@@ -161,9 +161,15 @@ class TestSparseDiffusion:
         assert state.seq_len == seq_len
         assert state.k == diffusion.config.k
 
-        # Uniform probabilities
-        expected_prob = 1.0 / diffusion.config.k
+        # Uniform probabilities: each token has 1/vocab_size probability
+        # (coarse-grained interpretation - not normalized to sum to 1 over k)
+        expected_prob = 1.0 / diffusion.config.vocab_size
         assert torch.allclose(state.probs, torch.full_like(state.probs, expected_prob))
+
+        # Probs should sum to k/vocab_size, NOT 1.0
+        probs_sum = state.probs.sum(dim=-1)
+        expected_sum = diffusion.config.k / diffusion.config.vocab_size
+        assert torch.allclose(probs_sum, torch.full_like(probs_sum, expected_sum))
 
     def test_add_noise_preserves_shape(self, diffusion, sparse_state):
         """Test that add_noise preserves shapes."""
@@ -187,8 +193,9 @@ class TestSparseDiffusion:
         t = torch.tensor([1.0] * sparse_state.batch_size)
         noisy_state = diffusion.add_noise(sparse_state, t)
 
-        # At t=1, probs should be close to uniform
-        expected_prob = 1.0 / sparse_state.k
+        # At t=1, probs should be close to uniform (1/vocab_size per token)
+        # This represents maximum uncertainty over the full vocabulary
+        expected_prob = 1.0 / diffusion.config.vocab_size
         assert torch.allclose(
             noisy_state.probs,
             torch.full_like(noisy_state.probs, expected_prob),
