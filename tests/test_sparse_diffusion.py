@@ -136,8 +136,10 @@ class TestSparseDiffusion:
         assert torch.isclose(noise[0], torch.tensor(0.0), atol=1e-5)
         # At t=1, noise should be 1
         assert torch.isclose(noise[2], torch.tensor(1.0), atol=1e-5)
-        # At t=0.5, noise should be 0.5 for cosine
-        assert torch.isclose(noise[1], torch.tensor(0.5), atol=1e-5)
+        # At t=0.5, noise should be ~0.293 for quarter-cosine schedule
+        # Formula: 1 - cos(t * pi / 2) = 1 - cos(pi/4) ≈ 0.293
+        expected_mid = 1 - torch.cos(torch.tensor(0.5 * 3.14159 / 2))
+        assert torch.isclose(noise[1], expected_mid, atol=1e-3)
 
     def test_get_noise_level_linear(self, sdd_config, embedding_table):
         """Test linear noise schedule."""
@@ -282,7 +284,8 @@ class TestSparseDiffusionSampling:
             def eval(self):
                 return self
 
-            def denoise_step(self, state, t, encoder_output=None, encoder_mask=None):
+            def denoise_step(self, state, t, encoder_output=None, encoder_mask=None,
+                           temperature=1.0):
                 # Return random new state
                 B, L, k = state.probs.shape
                 new_probs = torch.softmax(torch.randn(B, L, k), dim=-1)

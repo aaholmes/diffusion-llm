@@ -158,8 +158,10 @@ class SparseDiffusion(nn.Module):
             noise_level in [0, 1]
         """
         if self.config.schedule_type == "cosine":
-            # Cosine schedule: smooth transition
-            return 0.5 * (1 - torch.cos(t * math.pi))
+            # Cosine schedule: matches discrete diffusion
+            # At t=0: rate=0, at t=1: rate=1
+            # Uses quarter cosine for smoother endpoints
+            return 1 - torch.cos(t * math.pi / 2)
         else:
             # Linear schedule
             return t
@@ -408,25 +410,26 @@ class SparseDiffusion(nn.Module):
         batch_size: int,
         seq_len: int,
         num_steps: int = 25,
+        temperature: float = 1.0,
         encoder_output: Optional[torch.Tensor] = None,
         encoder_mask: Optional[torch.Tensor] = None,
         device: str = "cuda",
     ) -> Tuple[torch.Tensor, SparseState]:
         """
-        Generate sequences by iterative denoising.
+        Generate sequences by iterative denoising (DDIM-style deterministic).
 
         Starting from pure noise (random uniform distribution), we
         iteratively refine the sparse state by:
         1. Running the model to get predicted logits
-        2. Converting to top-k sparse state
-        3. Adding noise proportional to remaining timesteps
-        4. Repeating until t=0
+        2. Converting to top-k sparse state with temperature scaling
+        3. Repeating until t=0 (no re-noising between steps)
 
         Args:
             model: SparseDenoiser model
             batch_size: Number of sequences to generate
             seq_len: Length of sequences
             num_steps: Number of denoising steps
+            temperature: Sampling temperature (lower = more confident)
             encoder_output: Optional conditioning
             encoder_mask: Optional encoder mask
             device: Device to use
@@ -449,22 +452,22 @@ class SparseDiffusion(nn.Module):
         # Timestep schedule: t goes from 1.0 to 0.0
         timesteps = torch.linspace(1.0, 0.0, num_steps + 1, device=device)
 
-        # Iterative denoising
+        # Iterative denoising (DDIM-style: no re-noising)
         for i in range(num_steps):
             t_curr = timesteps[i].expand(batch_size)
-            t_next = timesteps[i + 1].item()
 
-            # Get model prediction
+            # Get model prediction with temperature
             state = model.denoise_step(
                 state, t_curr,
                 encoder_output=encoder_output,
                 encoder_mask=encoder_mask,
+                temperature=temperature,
             )
 
-            # Add noise proportional to t_next (less noise as we approach t=0)
-            # Skip on final step (t_next = 0)
-            if t_next > 0.01:
-                state = self.add_noise(state, torch.tensor([t_next], device=device))
+            # NOTE: No re-noising between steps!
+            # The model is trained to predict clean from noisy at level t.
+            # Re-noising would destroy the model's predictions and cause
+            # instability. This is DDIM-style deterministic sampling.
 
         # Final decoding: take top-1 tokens
         tokens = state.top1_tokens()

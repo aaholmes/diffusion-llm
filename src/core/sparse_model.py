@@ -578,6 +578,7 @@ class BilateralSparseDenoiser(nn.Module):
         t: torch.Tensor,
         encoder_output: Optional[torch.Tensor] = None,
         encoder_mask: Optional[torch.Tensor] = None,
+        temperature: float = 1.0,
     ) -> SparseState:
         """
         Single denoising step: input sparse → output sparse.
@@ -587,6 +588,7 @@ class BilateralSparseDenoiser(nn.Module):
             t: Timesteps [batch]
             encoder_output: Encoder output for conditioning
             encoder_mask: Encoder mask
+            temperature: Sampling temperature (lower = more confident)
 
         Returns:
             New SparseState (top-k from output distribution)
@@ -594,15 +596,24 @@ class BilateralSparseDenoiser(nn.Module):
         # Get full logits
         logits = self.forward(state, t, encoder_output, encoder_mask)
 
+        # Apply temperature BEFORE softmax (this is the correct way)
+        # Lower temperature = sharper distribution (more confident)
+        # Higher temperature = flatter distribution (more diverse)
+        if temperature != 1.0:
+            logits = logits / temperature
+
         # Convert to probabilities
         probs_full = F.softmax(logits, dim=-1)  # [B, L, vocab_size]
 
-        # Get top-k
+        # Get top-k for the sparse state
         k = self.config.k
         top_probs, top_indices = torch.topk(probs_full, k, dim=-1)
 
-        # Renormalize probabilities
-        top_probs = top_probs / top_probs.sum(dim=-1, keepdim=True)
+        # NOTE: We do NOT renormalize here!
+        # The probabilities from softmax already sum to 1 over the full vocab.
+        # Taking top-k gives us the k highest probabilities, which correctly
+        # represent the model's confidence. Renormalizing would artificially
+        # inflate confidence and cause repetition/premature commitment.
 
         # Get embeddings for top-k tokens
         top_embeds = self.token_embedding(top_indices)
@@ -769,6 +780,7 @@ class SparseDenoiser(nn.Module):
         t: torch.Tensor,
         encoder_output: Optional[torch.Tensor] = None,
         encoder_mask: Optional[torch.Tensor] = None,
+        temperature: float = 1.0,
     ) -> SparseState:
         """
         Single denoising step: input sparse → output sparse.
@@ -780,6 +792,7 @@ class SparseDenoiser(nn.Module):
             t: Timesteps [batch]
             encoder_output: Encoder output for conditioning
             encoder_mask: Encoder mask
+            temperature: Sampling temperature (lower = more confident)
 
         Returns:
             New SparseState (top-k from output distribution)
@@ -787,15 +800,24 @@ class SparseDenoiser(nn.Module):
         # Get full logits
         logits = self.forward(state, t, encoder_output, encoder_mask)
 
+        # Apply temperature BEFORE softmax (this is the correct way)
+        # Lower temperature = sharper distribution (more confident)
+        # Higher temperature = flatter distribution (more diverse)
+        if temperature != 1.0:
+            logits = logits / temperature
+
         # Convert to probabilities
         probs_full = F.softmax(logits, dim=-1)  # [B, L, vocab_size]
 
-        # Get top-k
+        # Get top-k for the sparse state
         k = self.config.k
         top_probs, top_indices = torch.topk(probs_full, k, dim=-1)  # [B, L, k] each
 
-        # Renormalize probabilities (so they sum to 1)
-        top_probs = top_probs / top_probs.sum(dim=-1, keepdim=True)
+        # NOTE: We do NOT renormalize here!
+        # The probabilities from softmax already sum to 1 over the full vocab.
+        # Taking top-k gives us the k highest probabilities, which correctly
+        # represent the model's confidence. Renormalizing would artificially
+        # inflate confidence and cause repetition/premature commitment.
 
         # Get embeddings for top-k tokens
         top_embeds = self.token_embedding(top_indices)  # [B, L, k, embed_dim]

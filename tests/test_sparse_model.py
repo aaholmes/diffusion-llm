@@ -294,9 +294,11 @@ class TestSparseDenoiser:
         assert new_state.seq_len == sparse_state.seq_len
         assert new_state.k == model.config.k
 
-        # Probs should sum to 1
-        probs_sum = new_state.probs.sum(dim=-1)
-        assert torch.allclose(probs_sum, torch.ones_like(probs_sum), atol=1e-5)
+        # Probs should be valid (non-negative, not NaN)
+        assert torch.all(new_state.probs >= 0)
+        assert not torch.any(torch.isnan(new_state.probs))
+        # Note: probs do NOT sum to 1 - they are raw top-k from softmax
+        # (we deliberately don't renormalize to avoid artificial confidence)
 
     def test_aggregate_sparse_input(self, model, sparse_state):
         """Test aggregation of sparse input."""

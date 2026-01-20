@@ -284,8 +284,19 @@ class BilateralTrainer:
         return {"val_loss": avg_loss, "val_acc": avg_acc}
 
     @torch.no_grad()
-    def generate_samples(self, num_samples: int = 4, seq_len: int = 64) -> list:
-        """Generate sample texts."""
+    def generate_samples(
+        self,
+        num_samples: int = 4,
+        seq_len: int = 64,
+        temperature: float = 0.8,
+    ) -> list:
+        """Generate sample texts.
+
+        Args:
+            num_samples: Number of samples to generate
+            seq_len: Sequence length
+            temperature: Sampling temperature (lower = more confident)
+        """
         self.model.eval()
 
         tokens, _ = self.diffusion.sample(
@@ -293,6 +304,7 @@ class BilateralTrainer:
             batch_size=num_samples,
             seq_len=seq_len,
             num_steps=25,
+            temperature=temperature,
             encoder_output=None,
             encoder_mask=None,
             device=self.device,
