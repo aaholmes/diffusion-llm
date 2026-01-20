@@ -28,14 +28,16 @@ Mathematically: `position_i = Σ_{j=1}^{k} prob_ij × embedding_j`
 | k=8 candidates | Full vocab (8192) intractable; k=8 captures uncertainty tractably |
 | Coarse-grained probs | Probs are true softmax values (sum < 1), not renormalized over k |
 | 1/vocab_size at max noise | Represents true uncertainty over full vocabulary |
-| Three noise mechanisms | Prob flattening + embedding noise + candidate swapping |
+| Two noise mechanisms | Prob flattening + embedding noise (no index swapping) |
 | No re-noising in sampling | DDIM-style deterministic; re-noising destroys predictions |
 
 **Probability Semantics:** At maximum noise, each of k candidates has probability `1/vocab_size` (not `1/k`). This "coarse-grained" interpretation means we're sampling k tokens from a uniform distribution over the full vocabulary, preserving the true softmax semantics from `denoise_step`.
 
-**Architecture:** Bilateral attention preserving [B, L, k, D] throughout:
-- **Intra-position**: k×k attention (candidates compete, prob-biased)
-- **Inter-position**: L×L attention on pooled representations (context propagates)
+**Why no index swapping?** Earlier versions swapped candidate indices with random tokens at high noise levels. This corrupted the signal—at high t, the model saw random indices with flat probabilities, making recovery impossible. By keeping indices fixed and only flattening probabilities + adding embedding noise, the model can learn to extract signal from uncertain distributions where indices still carry meaning.
+
+**Architecture:** Full sparse attention preserving [B, L, k, D] throughout:
+- **Full (L×k) attention**: Every candidate at every position attends to all others
+- **Probability biasing**: High-probability candidates receive more attention
 - **Learned readout**: Soft attention over k → single output per position
 
 ## Preliminary Results
@@ -107,13 +109,13 @@ src/
 ├── core/           # Model architectures
 │   ├── model.py              # AR and Diffusion transformers
 │   ├── diffusion.py          # Discrete diffusion process
-│   ├── sparse_model.py       # SDD bilateral attention model
+│   ├── sparse_model.py       # SDD full sparse attention model
 │   └── sparse_diffusion.py   # SDD noise/denoise process
 ├── training/       # Training scripts for each architecture
 ├── data/           # Data preparation (TinyStories)
 └── evaluation/     # Metrics and visualization
 scripts/            # Evaluation and comparison scripts
-tests/              # Test suite (~90% coverage)
+tests/              # Test suite (94% coverage)
 ```
 
 ## License
