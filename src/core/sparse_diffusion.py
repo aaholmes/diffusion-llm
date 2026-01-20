@@ -54,8 +54,7 @@ class SDDConfig:
     # Noise schedule
     schedule_type: str = "cosine"  # "cosine" or "linear"
 
-    # Noise injection parameters
-    embed_noise_scale: float = 0.1  # Scale for Gaussian noise on embeddings
+    # Noise injection parameters removed - using probability-based swapping instead
 
 
 class SparseState:
@@ -131,11 +130,16 @@ class SparseDiffusion(nn.Module):
     for the denoising (reverse process).
 
     Forward process (noise injection):
-        1. Mix probabilities toward uniform (flatten distribution)
-        2. Add Gaussian noise to embeddings (blur token meanings)
+        1. Compute swap probability based on ORIGINAL probs (before flattening)
+           - High original prob → low swap chance
+           - Low original prob → high swap chance
+        2. Swap candidates based on swap probability
+        3. Mix probabilities toward uniform (flatten distribution)
+        4. Swapped tokens get 1/vocab_size probability (maximum uncertainty)
 
-    Note: We do NOT swap indices. This keeps indices meaningful even at high
-    noise levels, allowing the model to learn from the structure of candidates.
+    This probability-based swapping ensures training distribution matches
+    inference distribution at t=1: all candidates have equal chance of being
+    swapped, making training closer to random initialization.
 
     Reverse process (denoising):
         1. Model predicts logits over full vocabulary
@@ -214,13 +218,17 @@ class SparseDiffusion(nn.Module):
         """
         Add noise to a sparse state (forward process).
 
-        Noise is added in TWO ways (no swapping):
-        1. Mix probabilities toward uniform (flatten distribution)
-        2. Add Gaussian noise to embeddings (blur token meanings)
+        Uses probability-based swapping to ensure training distribution matches
+        inference distribution at t=1:
+        1. Compute swap probability based on ORIGINAL probs (before flattening)
+           - swap_prob[i] = noise_level * (1 - normalized_prob[i])
+           - High-prob candidates rarely swapped, low-prob candidates often swapped
+        2. Swap candidates to random tokens based on swap probability
+        3. Mix probabilities toward uniform (flatten distribution)
+        4. Swapped tokens get 1/vocab_size probability (maximum uncertainty)
 
-        Without swapping, the indices remain meaningful even at high noise levels.
-        This allows the model to learn to extract signal from uncertain distributions
-        where the indices still carry information (even if probabilities are flat).
+        At t≈0: High-prob candidate (GT) rarely swapped, signal preserved
+        At t≈1: All probs are ~1/V, so all candidates equally likely to swap
 
         Args:
             state: Clean or partially noisy SparseState
@@ -230,23 +238,46 @@ class SparseDiffusion(nn.Module):
             Noisy SparseState
         """
         noise_level = self.get_noise_level(t)  # [batch]
-        noise_level = noise_level.view(-1, 1, 1)  # [batch, 1, 1]
+        device = state.probs.device
 
-        # 1. Mix probabilities toward uniform (coarse-grained: uniform means 1/vocab_size,
-        # representing maximum uncertainty over the full vocabulary)
+        # 1. Compute swap probability based on ORIGINAL probs (before flattening)
+        # Normalize probs to [0,1] range for swap calculation
+        # High original prob → low swap chance, low original prob → high swap chance
+        prob_max = state.probs.max(dim=-1, keepdim=True).values  # [B, L, 1]
+        normalized_probs = state.probs / (prob_max + 1e-8)  # [B, L, k] in [0, 1]
+
+        # swap_prob = noise_level * (1 - normalized_probs * (1 - noise_level))
+        # At t=0: swap_prob = 0 for all (no swaps)
+        # At t=1: swap_prob = 1 for all (all candidates equally likely to swap)
+        # At intermediate t: high-prob candidates swapped less than low-prob
+        noise_3d = noise_level.view(-1, 1, 1)  # [B, 1, 1]
+        swap_prob = noise_3d * (1 - normalized_probs * (1 - noise_3d))  # [B, L, k]
+        swap_mask = torch.rand_like(swap_prob) < swap_prob  # [B, L, k]
+
+        # 2. Generate random replacement indices for swapped positions
+        random_indices = torch.randint(
+            0, self.config.vocab_size,
+            state.indices.shape,
+            device=device
+        )
+
+        # 3. Apply swaps to indices
+        new_indices = torch.where(swap_mask, random_indices, state.indices)
+
+        # 4. Get embeddings for new indices (handles swaps)
+        new_embeds = self.embedding_table(new_indices)
+
+        # 5. Flatten probabilities toward uniform
         uniform_prob = 1.0 / self.config.vocab_size
-        noisy_probs = (1 - noise_level) * state.probs + noise_level * uniform_prob
+        noisy_probs = (1 - noise_3d) * state.probs + noise_3d * uniform_prob
 
-        # 2. Add Gaussian noise to embeddings
-        noise_level_4d = noise_level.unsqueeze(-1)  # [batch, 1, 1, 1]
-        embed_noise = torch.randn_like(state.embeds) * self.config.embed_noise_scale
-        noisy_embeds = state.embeds + noise_level_4d * embed_noise
+        # 6. Swapped tokens get 1/vocab_size probability (maximum uncertainty)
+        noisy_probs = torch.where(swap_mask, uniform_prob, noisy_probs)
 
-        # NO SWAPPING - indices remain meaningful even at high noise
         return SparseState(
             probs=noisy_probs,
-            embeds=noisy_embeds,
-            indices=state.indices,  # Keep original indices
+            embeds=new_embeds,
+            indices=new_indices,
         )
 
     def state_from_tokens(

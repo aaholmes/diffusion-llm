@@ -116,6 +116,12 @@ class TestSparseState:
         probs_sum = sparse_state.probs.sum(dim=-1)
         assert torch.allclose(probs_sum, torch.ones_like(probs_sum), atol=1e-5)
 
+    def test_device_property(self, sparse_state):
+        """Test device property returns correct device."""
+        device = sparse_state.device
+        assert device == sparse_state.probs.device
+        assert isinstance(device, torch.device)
+
 
 # =============================================================================
 # Tests: SparseDiffusion
@@ -185,22 +191,87 @@ class TestSparseDiffusion:
         t = torch.tensor([0.0] * sparse_state.batch_size)
         noisy_state = diffusion.add_noise(sparse_state, t)
 
-        # At t=0, probs should be unchanged
+        # At t=0, no swaps should occur and probs should be unchanged
         assert torch.allclose(noisy_state.probs, sparse_state.probs, atol=1e-5)
+        assert torch.equal(noisy_state.indices, sparse_state.indices)
 
     def test_add_noise_at_one(self, diffusion, sparse_state):
-        """Test that noise at t=1 approaches uniform."""
+        """Test that noise at t=1 gives uniform probs."""
         t = torch.tensor([1.0] * sparse_state.batch_size)
         noisy_state = diffusion.add_noise(sparse_state, t)
 
-        # At t=1, probs should be close to uniform (1/vocab_size per token)
-        # This represents maximum uncertainty over the full vocabulary
+        # At t=1, all probs should be close to uniform (1/vocab_size per token)
+        # (both due to prob flattening and swapped tokens getting 1/vocab_size)
         expected_prob = 1.0 / diffusion.config.vocab_size
         assert torch.allclose(
             noisy_state.probs,
             torch.full_like(noisy_state.probs, expected_prob),
             atol=1e-5
         )
+
+    def test_add_noise_swapping_increases_with_t(self, diffusion):
+        """Test that swapping rate increases with noise level."""
+        # Create clean state from tokens
+        tokens = torch.randint(5, diffusion.config.vocab_size, (8, 16))
+        clean_state = diffusion.state_from_tokens(tokens)
+
+        swap_rates = []
+        for t_val in [0.0, 0.3, 0.7, 1.0]:
+            t = torch.tensor([t_val] * 8)
+            noisy_state = diffusion.add_noise(clean_state, t)
+            # Count how many indices changed
+            swapped = (noisy_state.indices != clean_state.indices).float().mean()
+            swap_rates.append(swapped.item())
+
+        # Swap rate should increase monotonically with t
+        for i in range(len(swap_rates) - 1):
+            assert swap_rates[i] <= swap_rates[i + 1] + 0.1  # Allow small tolerance
+
+    def test_add_noise_high_prob_swapped_less(self, diffusion):
+        """Test that high-probability candidates are swapped less often."""
+        # Create clean state with peaked distribution
+        tokens = torch.randint(5, diffusion.config.vocab_size, (16, 32))
+        clean_state = diffusion.state_from_tokens(tokens, temperature=0.01)
+
+        # Run multiple times at intermediate noise level
+        t = torch.tensor([0.5] * 16)
+        top1_swap_count = 0
+        other_swap_count = 0
+        n_trials = 20
+
+        for _ in range(n_trials):
+            noisy_state = diffusion.add_noise(clean_state, t)
+            # Check if top-1 candidate (index 0) was swapped
+            top1_swapped = (noisy_state.indices[:, :, 0] != clean_state.indices[:, :, 0]).float()
+            other_swapped = (noisy_state.indices[:, :, 1:] != clean_state.indices[:, :, 1:]).float()
+            top1_swap_count += top1_swapped.mean().item()
+            other_swap_count += other_swapped.mean().item()
+
+        top1_swap_rate = top1_swap_count / n_trials
+        other_swap_rate = other_swap_count / n_trials
+
+        # High-prob candidates (top-1) should be swapped less than low-prob ones
+        assert top1_swap_rate < other_swap_rate
+
+    def test_add_noise_swapped_get_uniform_prob(self, diffusion):
+        """Test that swapped tokens get 1/vocab_size probability."""
+        tokens = torch.randint(5, diffusion.config.vocab_size, (4, 16))
+        clean_state = diffusion.state_from_tokens(tokens, temperature=0.01)
+
+        # At high noise, most things will be swapped
+        t = torch.tensor([0.9] * 4)
+        noisy_state = diffusion.add_noise(clean_state, t)
+
+        # Find positions where swapping occurred
+        swap_mask = (noisy_state.indices != clean_state.indices)
+        if swap_mask.any():
+            expected_prob = 1.0 / diffusion.config.vocab_size
+            swapped_probs = noisy_state.probs[swap_mask]
+            assert torch.allclose(
+                swapped_probs,
+                torch.full_like(swapped_probs, expected_prob),
+                atol=1e-5
+            )
 
     def test_state_from_tokens(self, diffusion):
         """Test creating state from discrete tokens."""
@@ -335,3 +406,57 @@ class TestSparseDiffusionSampling:
         )
 
         assert tokens.shape == (batch_size, seq_len)
+
+
+# =============================================================================
+# Tests: SparseDiffusion Decoding
+# =============================================================================
+
+class TestSparseDiffusionDecoding:
+    """Tests for SparseDiffusion decoding functionality."""
+
+    @pytest.fixture
+    def mock_tokenizer(self):
+        """Create a mock tokenizer for testing."""
+        class MockTokenizer:
+            def decode(self, token_ids):
+                # Simple mock that just joins token IDs as strings
+                return " ".join(str(t) for t in token_ids)
+        return MockTokenizer()
+
+    def test_decode_with_ignore_filters_special_tokens(self, diffusion, mock_tokenizer):
+        """Test that decode_with_ignore filters out special tokens."""
+        # Create tokens with some special tokens mixed in
+        tokens = torch.tensor([
+            [1, 10, 20, 0, 5, 30, 2],  # BOS=1, content, PAD=0, IGNORE=5, content, EOS=2
+            [1, 15, 5, 5, 25, 0, 2],   # BOS=1, content, IGNORE, IGNORE, content, PAD=0, EOS=2
+        ])
+
+        results = diffusion.decode_with_ignore(tokens, mock_tokenizer)
+
+        assert len(results) == 2
+        # Should only have content tokens (10, 20, 30) and (15, 25)
+        assert "10" in results[0]
+        assert "20" in results[0]
+        assert "30" in results[0]
+        assert "15" in results[1]
+        assert "25" in results[1]
+        # Should NOT have special tokens
+        for result in results:
+            assert "0" not in result.split()  # PAD
+            assert "1" not in result.split()  # BOS
+            assert "2" not in result.split()  # EOS
+            assert "5" not in result.split()  # IGNORE
+
+    def test_decode_with_ignore_handles_empty_sequence(self, diffusion, mock_tokenizer):
+        """Test decode_with_ignore with sequence of only special tokens."""
+        # Only special tokens
+        tokens = torch.tensor([
+            [1, 0, 0, 5, 5, 2],  # BOS, PAD, PAD, IGNORE, IGNORE, EOS
+        ])
+
+        results = diffusion.decode_with_ignore(tokens, mock_tokenizer)
+
+        assert len(results) == 1
+        # Should be empty or whitespace only
+        assert results[0].strip() == ""
