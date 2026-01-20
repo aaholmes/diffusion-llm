@@ -606,7 +606,7 @@ class BilateralSparseDenoiser(nn.Module):
         Forward pass with bilateral sparse attention.
 
         Args:
-            state: SparseState with probs [B, L, k], embeds [B, L, k, E]
+            state: SparseState with probs [B, L, k], indices [B, L, k]
             t: Timesteps [B]
             encoder_output: [B, enc_len, enc_dim]
             encoder_mask: [B, enc_len]
@@ -617,11 +617,14 @@ class BilateralSparseDenoiser(nn.Module):
         B, L, k = state.probs.shape
         probs = state.probs  # Keep for attention biasing
 
-        # 1. Encode probabilities
+        # 1. Look up token embeddings from indices
+        token_emb = self.token_embedding(state.indices)  # [B, L, k, E]
+
+        # 2. Encode probabilities
         prob_emb = self.prob_encoder(state.probs.unsqueeze(-1))  # [B, L, k, E]
 
-        # 2. Combine with token embeddings
-        h = state.embeds + prob_emb  # [B, L, k, E]
+        # 3. Combine token and probability embeddings
+        h = token_emb + prob_emb  # [B, L, k, E]
 
         # 3. Project to model dimension
         h = self.input_proj(h)  # [B, L, k, D]
@@ -709,12 +712,8 @@ class BilateralSparseDenoiser(nn.Module):
         # represent the model's confidence. Renormalizing would artificially
         # inflate confidence and cause repetition/premature commitment.
 
-        # Get embeddings for top-k tokens
-        top_embeds = self.token_embedding(top_indices)
-
         return SparseState(
             probs=top_probs,
-            embeds=top_embeds,
             indices=top_indices,
         )
 
@@ -799,17 +798,20 @@ class SparseDenoiser(nn.Module):
         Uses probability-weighted sum (order-invariant).
 
         Args:
-            state: SparseState with probs [B, L, k] and embeds [B, L, k, E]
+            state: SparseState with probs [B, L, k] and indices [B, L, k]
 
         Returns:
             Aggregated embeddings [B, L, embed_dim]
         """
+        # Look up embeddings from indices
+        embeds = self.token_embedding(state.indices)  # [B, L, k, E]
+
         # Weighted sum: sum_j(p_j * e_j)
         # probs: [B, L, k] → [B, L, k, 1]
         weights = state.probs.unsqueeze(-1)
         # embeds: [B, L, k, E]
         # weighted: [B, L, k, E]
-        weighted = state.embeds * weights
+        weighted = embeds * weights
         # Sum over k: [B, L, E]
         aggregated = weighted.sum(dim=2)
 
@@ -913,12 +915,8 @@ class SparseDenoiser(nn.Module):
         # represent the model's confidence. Renormalizing would artificially
         # inflate confidence and cause repetition/premature commitment.
 
-        # Get embeddings for top-k tokens
-        top_embeds = self.token_embedding(top_indices)  # [B, L, k, embed_dim]
-
         return SparseState(
             probs=top_probs,
-            embeds=top_embeds,
             indices=top_indices,
         )
 
@@ -1044,8 +1042,7 @@ if __name__ == "__main__":
     # Create dummy sparse state
     probs = torch.softmax(torch.randn(batch_size, seq_len, k), dim=-1)
     indices = torch.randint(0, 8192, (batch_size, seq_len, k))
-    embeds = model_v1.token_embedding(indices)
-    state = SparseState(probs=probs, embeds=embeds, indices=indices)
+    state = SparseState(probs=probs, indices=indices)
 
     # Forward pass
     t = torch.rand(batch_size)
@@ -1077,9 +1074,8 @@ if __name__ == "__main__":
     print(f"Model parameters: {num_params_v2:,}")
     print(f"Parameter increase: {num_params_v2 - num_params:,} ({100*(num_params_v2/num_params - 1):.1f}%)")
 
-    # Create state with v2's embedding table
-    embeds_v2 = model_v2.token_embedding(indices)
-    state_v2 = SparseState(probs=probs, embeds=embeds_v2, indices=indices)
+    # Create state for v2 (same state, embeddings are looked up internally)
+    state_v2 = SparseState(probs=probs, indices=indices)
 
     # Forward pass
     logits_v2 = model_v2(state_v2, t)
@@ -1088,7 +1084,7 @@ if __name__ == "__main__":
     # Denoise step
     new_state = model_v2.denoise_step(state_v2, t)
     print(f"New state probs shape: {new_state.probs.shape}")
-    print(f"New state embeds shape: {new_state.embeds.shape}")
+    print(f"New state indices shape: {new_state.indices.shape}")
 
     # With encoder
     logits_v2_cond = model_v2(state_v2, t, encoder_output, encoder_mask)

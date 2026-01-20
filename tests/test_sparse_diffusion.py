@@ -46,8 +46,7 @@ def sparse_state(sdd_config, embedding_table):
     batch_size, seq_len, k = 2, 8, sdd_config.k
     probs = torch.softmax(torch.randn(batch_size, seq_len, k), dim=-1)
     indices = torch.randint(0, sdd_config.vocab_size, (batch_size, seq_len, k))
-    embeds = embedding_table(indices)
-    return SparseState(probs=probs, embeds=embeds, indices=indices)
+    return SparseState(probs=probs, indices=indices)
 
 
 # =============================================================================
@@ -89,7 +88,6 @@ class TestSparseState:
         assert sparse_state.batch_size == 2
         assert sparse_state.seq_len == 8
         assert sparse_state.k == 4
-        assert sparse_state.embed_dim == 32
 
     def test_top1_tokens(self, sparse_state):
         """Test top1_tokens method."""
@@ -108,7 +106,6 @@ class TestSparseState:
         device = torch.device("cpu")
         moved_state = sparse_state.to(device)
         assert moved_state.probs.device == device
-        assert moved_state.embeds.device == device
         assert moved_state.indices.device == device
 
     def test_probs_sum_to_one(self, sparse_state):
@@ -183,7 +180,6 @@ class TestSparseDiffusion:
         noisy_state = diffusion.add_noise(sparse_state, t)
 
         assert noisy_state.probs.shape == sparse_state.probs.shape
-        assert noisy_state.embeds.shape == sparse_state.embeds.shape
         assert noisy_state.indices.shape == sparse_state.indices.shape
 
     def test_add_noise_at_zero(self, diffusion, sparse_state):
@@ -368,8 +364,7 @@ class TestSparseDiffusionSampling:
                 B, L, k = state.probs.shape
                 new_probs = torch.softmax(torch.randn(B, L, k), dim=-1)
                 new_indices = torch.randint(0, self.config.vocab_size, (B, L, k))
-                new_embeds = self.token_embedding(new_indices)
-                return SparseState(probs=new_probs, embeds=new_embeds, indices=new_indices)
+                return SparseState(probs=new_probs, indices=new_indices)
 
         return MockDenoiser(sdd_config, embedding_table)
 

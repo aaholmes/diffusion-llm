@@ -21,8 +21,8 @@ Why this matters:
 - Novel middle ground: Expressive but tractable
 
 Key concepts:
-- State: (probs, embeds, indices) representing top-k tokens per position
-- Noise: Mix toward uniform + Gaussian noise on embeddings
+- State: (probs, indices) representing top-k tokens per position
+- Noise: Mix toward uniform + probability-based swapping
 - Denoising: Refine distributions iteratively
 - IGNORE token: Enables variable-length generation
 """
@@ -61,28 +61,25 @@ class SparseState:
     """
     Represents a sparse distribution over tokens at each position.
 
-    Each position has k (probability, embedding, index) tuples.
-    This is the core representation of Sparse Distribution Diffusion.
+    Each position has k (probability, index) tuples. Embeddings are looked up
+    from the model's embedding table when needed, not stored in the state.
 
     Mathematical interpretation:
-        position_i = Σ_{j=1}^{k} probs[i,j] × δ(embeds[i,j])
+        position_i = Σ_{j=1}^{k} probs[i,j] × δ(embedding[indices[i,j]])
 
     where δ is the Dirac delta function in embedding space.
 
     Attributes:
         probs: [batch, seq_len, k] - probabilities (sorted descending)
-        embeds: [batch, seq_len, k, embed_dim] - corresponding embeddings
         indices: [batch, seq_len, k] - token indices
     """
 
     def __init__(
         self,
         probs: torch.Tensor,
-        embeds: torch.Tensor,
         indices: torch.Tensor,
     ):
         self.probs = probs
-        self.embeds = embeds
         self.indices = indices
 
     @property
@@ -96,10 +93,6 @@ class SparseState:
     @property
     def k(self) -> int:
         return self.probs.shape[2]
-
-    @property
-    def embed_dim(self) -> int:
-        return self.embeds.shape[3]
 
     @property
     def device(self) -> torch.device:
@@ -117,7 +110,6 @@ class SparseState:
         """Move state to device."""
         return SparseState(
             probs=self.probs.to(device),
-            embeds=self.embeds.to(device),
             indices=self.indices.to(device),
         )
 
@@ -181,7 +173,7 @@ class SparseDiffusion(nn.Module):
         Initialize state with random uniform distribution.
 
         This is the "maximally noisy" state - pure uncertainty.
-        No MASK token needed; we start from random embeddings.
+        No MASK token needed; we start from random tokens.
 
         Args:
             batch_size: Number of sequences
@@ -201,14 +193,11 @@ class SparseDiffusion(nn.Module):
             device=device
         )
 
-        # Look up their embeddings
-        embeds = self.embedding_table(indices)  # [batch, seq, k, embed_dim]
-
         # Uniform probabilities (coarse-grained: each token has 1/vocab_size probability,
         # representing maximum uncertainty over the full vocabulary)
         probs = torch.ones(batch_size, seq_len, k, device=device) / vocab_size
 
-        return SparseState(probs=probs, embeds=embeds, indices=indices)
+        return SparseState(probs=probs, indices=indices)
 
     def add_noise(
         self,
@@ -264,19 +253,15 @@ class SparseDiffusion(nn.Module):
         # 3. Apply swaps to indices
         new_indices = torch.where(swap_mask, random_indices, state.indices)
 
-        # 4. Get embeddings for new indices (handles swaps)
-        new_embeds = self.embedding_table(new_indices)
-
-        # 5. Flatten probabilities toward uniform
+        # 4. Flatten probabilities toward uniform
         uniform_prob = 1.0 / self.config.vocab_size
         noisy_probs = (1 - noise_3d) * state.probs + noise_3d * uniform_prob
 
-        # 6. Swapped tokens get 1/vocab_size probability (maximum uncertainty)
+        # 5. Swapped tokens get 1/vocab_size probability (maximum uncertainty)
         noisy_probs = torch.where(swap_mask, uniform_prob, noisy_probs)
 
         return SparseState(
             probs=noisy_probs,
-            embeds=new_embeds,
             indices=new_indices,
         )
 
@@ -322,10 +307,7 @@ class SparseDiffusion(nn.Module):
         probs = torch.full((batch_size, seq_len, k), other_prob, device=device)
         probs[:, :, 0] = gt_prob
 
-        # Get embeddings
-        embeds = self.embedding_table(indices)
-
-        return SparseState(probs=probs, embeds=embeds, indices=indices)
+        return SparseState(probs=probs, indices=indices)
 
     def training_step(
         self,

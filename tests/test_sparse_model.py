@@ -50,13 +50,11 @@ def model_config():
 def sparse_state(model_config):
     """Create a test SparseState."""
     batch_size, seq_len, k = 2, 16, model_config.k
-    embed_dim = model_config.embed_dim
 
     probs = torch.softmax(torch.randn(batch_size, seq_len, k), dim=-1)
     indices = torch.randint(0, model_config.vocab_size, (batch_size, seq_len, k))
-    embeds = torch.randn(batch_size, seq_len, k, embed_dim)
 
-    return SparseState(probs=probs, embeds=embeds, indices=indices)
+    return SparseState(probs=probs, indices=indices)
 
 
 # =============================================================================
@@ -396,8 +394,7 @@ class TestBilateralSparseDenoiser:
         batch_size, seq_len, k = 2, 16, model.config.k
         probs = torch.softmax(torch.randn(batch_size, seq_len, k), dim=-1)
         indices = torch.randint(0, model.config.vocab_size, (batch_size, seq_len, k))
-        embeds = model.token_embedding(indices)
-        return SparseState(probs=probs, embeds=embeds, indices=indices)
+        return SparseState(probs=probs, indices=indices)
 
     def test_forward_output_shape(self, model, sparse_state_for_bilateral):
         """Test forward pass returns correct shape."""
@@ -525,11 +522,10 @@ class TestModelIntegration:
         batch_size, seq_len = 2, 8
         k = sdd_config.k
 
-        # Create input
+        # Create input (no embeds - model looks them up from indices)
         probs = torch.softmax(torch.randn(batch_size, seq_len, k), dim=-1)
         indices = torch.randint(0, 500, (batch_size, seq_len, k))
-        embeds = model.token_embedding(indices)
-        state = SparseState(probs=probs, embeds=embeds, indices=indices)
+        state = SparseState(probs=probs, indices=indices)
 
         # Forward pass
         t = torch.rand(batch_size)
@@ -554,11 +550,10 @@ class TestModelIntegration:
         batch_size, seq_len = 2, 8
         k = sdd_config.k
 
-        # Create input
+        # Create input (no embeds - model looks them up from indices)
         probs = torch.softmax(torch.randn(batch_size, seq_len, k), dim=-1)
         indices = torch.randint(0, 500, (batch_size, seq_len, k))
-        embeds = model.token_embedding(indices)
-        state = SparseState(probs=probs, embeds=embeds, indices=indices)
+        state = SparseState(probs=probs, indices=indices)
 
         # Forward pass
         t = torch.rand(batch_size)
