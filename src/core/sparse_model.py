@@ -190,9 +190,100 @@ class TransformerBlock(nn.Module):
 
 
 # =============================================================================
-# SDD v2: Bilateral Sparse Attention Architecture
+# SDD v2: Full Sparse Attention Architecture
 # =============================================================================
 
+class FullSparseAttention(nn.Module):
+    """
+    Full attention across ALL candidates at ALL positions.
+
+    Flattens [B, L, k, D] → [B, L*k, D], does self-attention,
+    then reshapes back. Uses probability biasing and sinusoidal position embeddings.
+
+    This allows:
+    - Candidate 0 at position 5 to attend to candidate 3 at position 12
+    - Natural competition between candidates across positions
+    - Coherent token selection via full context
+
+    Input: [B, L, k, D]
+    Output: [B, L, k, D]
+    """
+
+    def __init__(self, d_model: int, n_heads: int, max_seq_len: int, k: int, dropout: float = 0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.k = k
+        self.max_seq_len = max_seq_len
+        self.head_dim = d_model // n_heads
+        self.scale = self.head_dim ** -0.5
+
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+
+        # Probability bias scale
+        self.prob_bias_scale = nn.Parameter(torch.tensor(1.0))
+
+        # Use sinusoidal position embeddings for flexibility with varying L*k
+        # This handles dynamic sequence lengths and k values
+        self.pos_emb = SinusoidalEmbedding(d_model)
+
+    def forward(self, h: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            h: [B, L, k, D]
+            probs: [B, L, k]
+        Returns:
+            [B, L, k, D]
+        """
+        B, L, k, D = h.shape
+
+        # Flatten to [B, L*k, D]
+        h_flat = h.view(B, L * k, D)
+        probs_flat = probs.view(B, L * k)  # [B, L*k]
+
+        # Add sinusoidal position embeddings (handles any L*k)
+        # SinusoidalEmbedding forward with 2D input returns [seq_len, D]
+        # Create a dummy batch dimension to get the right shape
+        positions = torch.zeros(1, L * k, device=h.device, dtype=torch.long)
+        pos_emb = self.pos_emb(positions)  # [1, L*k, D] -> we just need [L*k, D]
+        h_flat = h_flat + pos_emb
+
+        # Project Q, K, V
+        q = self.q_proj(h_flat)  # [B, L*k, D]
+        key = self.k_proj(h_flat)
+        v = self.v_proj(h_flat)
+
+        # Reshape for multi-head attention
+        q = q.view(B, L * k, self.n_heads, self.head_dim).transpose(1, 2)  # [B, heads, L*k, head_dim]
+        key = key.view(B, L * k, self.n_heads, self.head_dim).transpose(1, 2)
+        v = v.view(B, L * k, self.n_heads, self.head_dim).transpose(1, 2)
+
+        # Attention scores: [B, heads, L*k, L*k]
+        scores = torch.matmul(q, key.transpose(-1, -2)) * self.scale
+
+        # Add probability bias (attend more to high-prob candidates)
+        prob_bias = torch.log(probs_flat + 1e-8)  # [B, L*k]
+        prob_bias = prob_bias.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, L*k]
+        scores = scores + self.prob_bias_scale * prob_bias
+
+        # Attention weights
+        attn = F.softmax(scores, dim=-1)
+        attn = self.dropout(attn)
+
+        # Apply attention
+        out = torch.matmul(attn, v)  # [B, heads, L*k, head_dim]
+        out = out.transpose(1, 2).contiguous().view(B, L * k, D)
+        out = self.out_proj(out)
+
+        # Reshape back to [B, L, k, D]
+        return out.view(B, L, k, D)
+
+
+# Legacy classes kept for backwards compatibility with existing tests
 class IntraPositionAttention(nn.Module):
     """
     Attention within each position's k candidates.
@@ -200,6 +291,8 @@ class IntraPositionAttention(nn.Module):
     Each position is independent - candidates only see other candidates
     at the same position. Probability bias encourages attending to
     high-probability candidates.
+
+    NOTE: This is the legacy implementation. New code should use FullSparseAttention.
 
     Input: [B, L, k, D]
     Output: [B, L, k, D]
@@ -275,6 +368,8 @@ class InterPositionAttention(nn.Module):
     Pools each position's k candidates (prob-weighted), does standard
     self-attention across positions, then broadcasts back to all candidates.
 
+    NOTE: This is the legacy implementation. New code should use FullSparseAttention.
+
     Input: [B, L, k, D]
     Output: [B, L, k, D]
     """
@@ -311,13 +406,15 @@ class InterPositionAttention(nn.Module):
 
 class BilateralSparseBlock(nn.Module):
     """
-    Transformer block with bilateral sparse attention.
+    Transformer block with full sparse attention.
 
     Architecture (pre-norm):
-        h → LayerNorm → IntraPositionAttn → +
-        h → LayerNorm → InterPositionAttn → +
-        h → LayerNorm → CrossAttn(encoder) → +
+        h → LayerNorm → FullSparseAttn → +
+        h → LayerNorm → CrossAttn(encoder) → +  (if encoder provided)
         h → LayerNorm → FFN → +
+
+    Uses full (L×k) attention where every candidate at every position can
+    attend to all other candidates, enabling coherent token selection.
 
     Maintains [B, L, k, D] throughout.
     """
@@ -327,29 +424,26 @@ class BilateralSparseBlock(nn.Module):
         d_model: int,
         n_heads: int,
         d_ff: int,
+        max_seq_len: int,
+        k: int,
         dropout: float = 0.1,
     ):
         super().__init__()
 
-        # Intra-position attention (k×k per position)
+        # Full attention across all L*k candidates
         self.norm1 = nn.LayerNorm(d_model)
-        self.intra_attn = IntraPositionAttention(d_model, n_heads, dropout)
+        self.full_attn = FullSparseAttention(d_model, n_heads, max_seq_len, k, dropout)
         self.dropout1 = nn.Dropout(dropout)
 
-        # Inter-position attention (L×L, pooled)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.inter_attn = InterPositionAttention(d_model, n_heads, dropout)
-        self.dropout2 = nn.Dropout(dropout)
-
         # Cross-attention to encoder
-        self.norm3 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
         self.cross_attn = nn.MultiheadAttention(
             d_model, n_heads, dropout=dropout, batch_first=True
         )
-        self.dropout3 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
 
         # FFN (applied to each candidate)
-        self.norm4 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
         self.ffn = nn.Sequential(
             nn.Linear(d_model, d_ff),
             nn.GELU(),
@@ -377,54 +471,52 @@ class BilateralSparseBlock(nn.Module):
         """
         B, L, k, D = h.shape
 
-        # 1. Intra-position attention
-        h = h + self.dropout1(self.intra_attn(self.norm1(h), probs))
+        # 1. Full attention (replaces both intra and inter)
+        h = h + self.dropout1(self.full_attn(self.norm1(h), probs))
 
-        # 2. Inter-position attention
-        h = h + self.dropout2(self.inter_attn(self.norm2(h), probs))
-
-        # 3. Cross-attention (pool to [B, L, D], cross-attend, broadcast back)
+        # 2. Cross-attention if encoder provided
         if encoder_output is not None:
-            # Pool candidates for cross-attention query
-            weights = probs.unsqueeze(-1)  # [B, L, k, 1]
-            h_pooled = (self.norm3(h) * weights).sum(dim=2)  # [B, L, D]
+            # Flatten for cross-attention: [B, L*k, D]
+            h_flat = h.view(B, L * k, D)
+            h_normed = self.norm2(h_flat)
 
             # Cross-attention
             key_padding_mask = None
             if encoder_mask is not None:
                 key_padding_mask = encoder_mask == 0
 
-            cross_out, _ = self.cross_attn(
-                h_pooled, encoder_output, encoder_output,
+            h_cross, _ = self.cross_attn(
+                h_normed, encoder_output, encoder_output,
                 key_padding_mask=key_padding_mask,
             )
-            # Broadcast back to all candidates
-            h = h + self.dropout3(cross_out.unsqueeze(2))
+            # Reshape back and add residual
+            h = h + self.dropout2(h_cross.view(B, L, k, D))
 
-        # 4. FFN (applied to each candidate independently)
-        h = h + self.ffn(self.norm4(h))
+        # 3. FFN (applied to each candidate independently)
+        h = h + self.ffn(self.norm3(h))
 
         return h
 
 
 class BilateralSparseDenoiser(nn.Module):
     """
-    SDD v2: Bilateral Sparse Attention Denoiser.
+    SDD v2: Full Sparse Attention Denoiser.
 
     Unlike SparseDenoiser which immediately aggregates k candidates into one
     embedding, this model preserves the full [B, L, k, D] tensor throughout
     all transformer layers, allowing candidates to interact via attention.
 
-    Key innovation: Bilateral attention
-    - Intra-position: k×k attention within each position (candidates compete)
-    - Inter-position: L×L attention across positions (context propagation)
+    Key innovation: Full (L×k) attention
+    - Every candidate at every position can attend to all other candidates
+    - Enables coherent token selection across positions
+    - Natural competition between candidates
 
     Architecture:
         Input: SparseState [B, L, k, E]
             ↓
         Probability encoding + position/time embeddings
             ↓
-        N × BilateralSparseBlock (intra + inter + cross + FFN)
+        N × BilateralSparseBlock (full_attn + cross + FFN)
             ↓
         Learned readout (collapse k → 1)
             ↓
@@ -465,12 +557,14 @@ class BilateralSparseDenoiser(nn.Module):
         else:
             self.encoder_proj = None
 
-        # Bilateral sparse transformer layers
+        # Full sparse transformer layers
         self.layers = nn.ModuleList([
             BilateralSparseBlock(
                 config.d_model,
                 config.n_heads,
                 config.d_ff,
+                config.max_seq_len,
+                config.k,
                 config.dropout,
             )
             for _ in range(config.n_layers)

@@ -100,17 +100,22 @@ class BilateralTrainer:
         vocab_size = self.data_config["vocab_size"]
 
         # Create model based on version
+        # Use max k from schedule for model creation to support k-curriculum
+        max_k = max(config.k_schedule)
         if config.model_version == "v2":
             self.model, self.sdd_config = create_bilateral_sparse_model(
                 vocab_size=vocab_size,
                 embed_dim=config.embed_dim,
-                k=config.k_schedule[0],
+                k=max_k,  # Use max k to support curriculum
                 d_model=config.d_model,
                 n_layers=config.n_layers,
                 n_heads=config.n_heads,
                 encoder_dim=None,  # No encoder for text-only
                 max_seq_len=config.max_seq_len,
             )
+            # Set initial k for curriculum
+            self.model.config.k = config.k_schedule[0]
+            self.sdd_config.k = config.k_schedule[0]
             print(f"Created BilateralSparseDenoiser (v2)")
         else:
             self.model, self.sdd_config = create_sparse_model(

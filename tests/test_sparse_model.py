@@ -14,6 +14,7 @@ from src.core.sparse_model import (
     SparseModelConfig,
     SinusoidalEmbedding,
     TransformerBlock,
+    FullSparseAttention,
     IntraPositionAttention,
     InterPositionAttention,
     BilateralSparseBlock,
@@ -161,11 +162,58 @@ class TestTransformerBlock:
 
 
 # =============================================================================
-# Tests: IntraPositionAttention
+# Tests: FullSparseAttention
+# =============================================================================
+
+class TestFullSparseAttention:
+    """Tests for FullSparseAttention (full L×k attention)."""
+
+    def test_output_shape(self):
+        attn = FullSparseAttention(d_model=64, n_heads=4, max_seq_len=32, k=8)
+        h = torch.randn(2, 16, 8, 64)  # [B, L, k, D]
+        probs = torch.softmax(torch.randn(2, 16, 8), dim=-1)  # [B, L, k]
+        output = attn(h, probs)
+        assert output.shape == h.shape
+
+    def test_probability_bias_effect(self):
+        attn = FullSparseAttention(d_model=64, n_heads=4, max_seq_len=32, k=8)
+        h = torch.randn(2, 16, 8, 64)
+
+        # Uniform probs
+        probs_uniform = torch.ones(2, 16, 8) / 8
+        out_uniform = attn(h, probs_uniform)
+
+        # Peaked probs (first candidate has high prob)
+        probs_peaked = torch.zeros(2, 16, 8)
+        probs_peaked[:, :, 0] = 0.9
+        probs_peaked[:, :, 1:] = 0.1 / 7
+        out_peaked = attn(h, probs_peaked)
+
+        # Outputs should be different
+        assert not torch.allclose(out_uniform, out_peaked, atol=1e-3)
+
+    def test_cross_position_information_flow(self):
+        """Test that candidates at different positions can influence each other."""
+        attn = FullSparseAttention(d_model=64, n_heads=4, max_seq_len=16, k=4)
+
+        # Create input where positions are clearly different
+        h = torch.zeros(1, 8, 4, 64)
+        h[0, 0, :, :] = 1.0  # First position has value 1
+        probs = torch.ones(1, 8, 4) / 4
+
+        output = attn(h, probs)
+
+        # Other positions should have received some info from position 0
+        # (due to full attention)
+        assert not torch.allclose(output[0, 4, 0, :], torch.zeros(64))
+
+
+# =============================================================================
+# Tests: IntraPositionAttention (Legacy)
 # =============================================================================
 
 class TestIntraPositionAttention:
-    """Tests for IntraPositionAttention (k×k per position)."""
+    """Tests for IntraPositionAttention (k×k per position, legacy)."""
 
     def test_output_shape(self):
         attn = IntraPositionAttention(d_model=64, n_heads=4)
@@ -193,11 +241,11 @@ class TestIntraPositionAttention:
 
 
 # =============================================================================
-# Tests: InterPositionAttention
+# Tests: InterPositionAttention (Legacy)
 # =============================================================================
 
 class TestInterPositionAttention:
-    """Tests for InterPositionAttention (L×L via pooling)."""
+    """Tests for InterPositionAttention (L×L via pooling, legacy)."""
 
     def test_output_shape(self):
         attn = InterPositionAttention(d_model=64, n_heads=4)
@@ -226,10 +274,10 @@ class TestInterPositionAttention:
 # =============================================================================
 
 class TestBilateralSparseBlock:
-    """Tests for BilateralSparseBlock."""
+    """Tests for BilateralSparseBlock with full sparse attention."""
 
     def test_forward_without_encoder(self):
-        block = BilateralSparseBlock(d_model=64, n_heads=4, d_ff=128)
+        block = BilateralSparseBlock(d_model=64, n_heads=4, d_ff=128, max_seq_len=32, k=8)
         h = torch.randn(2, 16, 8, 64)  # [B, L, k, D]
         probs = torch.softmax(torch.randn(2, 16, 8), dim=-1)
 
@@ -237,13 +285,27 @@ class TestBilateralSparseBlock:
         assert output.shape == h.shape
 
     def test_forward_with_encoder(self):
-        block = BilateralSparseBlock(d_model=64, n_heads=4, d_ff=128)
+        block = BilateralSparseBlock(d_model=64, n_heads=4, d_ff=128, max_seq_len=32, k=8)
         h = torch.randn(2, 16, 8, 64)
         probs = torch.softmax(torch.randn(2, 16, 8), dim=-1)
         encoder_output = torch.randn(2, 10, 64)
 
         output = block(h, probs, encoder_output)
         assert output.shape == h.shape
+
+    def test_gradient_flow(self):
+        """Test gradients flow through full attention."""
+        block = BilateralSparseBlock(d_model=64, n_heads=4, d_ff=128, max_seq_len=32, k=8)
+        h = torch.randn(2, 16, 8, 64, requires_grad=True)
+        probs = torch.softmax(torch.randn(2, 16, 8), dim=-1)
+
+        output = block(h, probs)
+        loss = output.mean()
+        loss.backward()
+
+        # Gradients should exist on input
+        assert h.grad is not None
+        assert not torch.allclose(h.grad, torch.zeros_like(h.grad))
 
 
 # =============================================================================

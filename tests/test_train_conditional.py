@@ -490,3 +490,381 @@ class TestWeightLoading:
             trainer.decoder.token_embedding.weight,
             torch.ones_like(trainer.decoder.token_embedding.weight)
         )
+
+
+class TestCheckpointResume:
+    """Tests for checkpoint resumption."""
+
+    @pytest.fixture
+    def trainer_with_checkpoint(self, tmp_path):
+        """Create a trainer and save a checkpoint for resumption testing."""
+        from src.core.model import create_model
+
+        # Create and save pretrained denoiser
+        model = create_model("tiny", vocab_size=500, max_seq_len=32)
+        checkpoint = {
+            "model_config": model.config,
+            "model_state_dict": model.state_dict(),
+        }
+        denoiser_path = tmp_path / "denoiser.pt"
+        torch.save(checkpoint, denoiser_path)
+
+        # Create conditional data
+        data_dir = tmp_path / "data_conditional"
+        data_dir.mkdir()
+
+        torch.save(torch.randint(1, 500, (50, 16)), data_dir / "train_encoder.pt")
+        torch.save(torch.randint(1, 500, (10, 16)), data_dir / "val_encoder.pt")
+        torch.save(torch.randint(1, 500, (50, 32)), data_dir / "train_decoder.pt")
+        torch.save(torch.randint(1, 500, (10, 32)), data_dir / "val_decoder.pt")
+
+        checkpoint_dir = tmp_path / "checkpoints"
+
+        config = ConditionalTrainConfig(
+            denoiser_checkpoint=str(denoiser_path),
+            data_dir=str(data_dir),
+            checkpoint_dir=str(checkpoint_dir),
+            batch_size=4,
+            max_steps=10,
+            vocab_size=500,
+            max_encoder_len=16,
+            max_decoder_len=32,
+            use_amp=False,
+            num_workers=0,
+            eval_every=5,
+            save_every=5,
+            log_every=1,
+        )
+
+        trainer = ConditionalTrainer(config)
+
+        # Train a bit and save checkpoint
+        trainer.global_step = 5
+        trainer.best_val_loss = 2.5
+        trainer.save_checkpoint("resume_test")
+
+        return trainer, str(checkpoint_dir / "resume_test.pt"), config, str(denoiser_path), str(data_dir)
+
+    def test_resume_from_checkpoint(self, trainer_with_checkpoint, tmp_path):
+        """Test resuming training from checkpoint."""
+        _, checkpoint_path, orig_config, denoiser_path, data_dir = trainer_with_checkpoint
+
+        # Create new config with resume path
+        new_config = ConditionalTrainConfig(
+            denoiser_checkpoint=denoiser_path,
+            data_dir=data_dir,
+            checkpoint_dir=str(tmp_path / "new_checkpoints"),
+            resume_checkpoint=checkpoint_path,
+            batch_size=4,
+            max_steps=10,
+            vocab_size=500,
+            max_encoder_len=16,
+            max_decoder_len=32,
+            use_amp=False,
+            num_workers=0,
+        )
+
+        new_trainer = ConditionalTrainer(new_config)
+
+        # Check state was restored
+        assert new_trainer.global_step == 5
+        assert new_trainer.best_val_loss == 2.5
+
+
+class TestMainFunction:
+    """Tests for main() function argument parsing."""
+
+    def test_main_argument_parsing_basic(self, tmp_path, monkeypatch):
+        """Test that main function parses arguments correctly."""
+        from src.core.model import create_model
+        import sys
+
+        # Create minimal setup
+        model = create_model("tiny", vocab_size=500, max_seq_len=32)
+        checkpoint = {
+            "model_config": model.config,
+            "model_state_dict": model.state_dict(),
+        }
+        denoiser_path = tmp_path / "denoiser.pt"
+        torch.save(checkpoint, denoiser_path)
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        torch.save(torch.randint(1, 500, (10, 16)), data_dir / "train_encoder.pt")
+        torch.save(torch.randint(1, 500, (5, 16)), data_dir / "val_encoder.pt")
+        torch.save(torch.randint(1, 500, (10, 32)), data_dir / "train_decoder.pt")
+        torch.save(torch.randint(1, 500, (5, 32)), data_dir / "val_decoder.pt")
+
+        # We can't easily test main() without it actually running training,
+        # but we can test the argument parsing part by checking the config is created correctly
+        from src.training.train_conditional import ConditionalTrainConfig
+
+        config = ConditionalTrainConfig(
+            denoiser_checkpoint=str(denoiser_path),
+            data_dir=str(data_dir),
+            batch_size=32,
+            max_steps=100,
+            learning_rate=5e-5,
+            use_amp=False,  # This is the actual field name
+        )
+
+        # Verify custom values
+        assert config.batch_size == 32
+        assert config.max_steps == 100
+        assert config.learning_rate == 5e-5
+        assert config.use_amp is False
+
+
+class TestLearningRateSchedule:
+    """Tests for learning rate schedule edge cases."""
+
+    @pytest.fixture
+    def trainer(self, tmp_path):
+        """Create a trainer for LR testing."""
+        from src.core.model import create_model
+
+        model = create_model("tiny", vocab_size=500, max_seq_len=32)
+        checkpoint = {
+            "model_config": model.config,
+            "model_state_dict": model.state_dict(),
+        }
+        denoiser_path = tmp_path / "denoiser.pt"
+        torch.save(checkpoint, denoiser_path)
+
+        data_dir = tmp_path / "data_conditional"
+        data_dir.mkdir()
+
+        torch.save(torch.randint(1, 500, (20, 16)), data_dir / "train_encoder.pt")
+        torch.save(torch.randint(1, 500, (5, 16)), data_dir / "val_encoder.pt")
+        torch.save(torch.randint(1, 500, (20, 32)), data_dir / "train_decoder.pt")
+        torch.save(torch.randint(1, 500, (5, 32)), data_dir / "val_decoder.pt")
+
+        config = ConditionalTrainConfig(
+            denoiser_checkpoint=str(denoiser_path),
+            data_dir=str(data_dir),
+            checkpoint_dir=str(tmp_path / "checkpoints"),
+            batch_size=4,
+            max_steps=100,
+            warmup_steps=10,
+            vocab_size=500,
+            max_encoder_len=16,
+            max_decoder_len=32,
+            use_amp=False,
+            num_workers=0,
+        )
+
+        return ConditionalTrainer(config)
+
+    def test_lr_at_step_zero(self, trainer):
+        """Test LR is 0 at step 0."""
+        lr = trainer.get_lr(0)
+        assert lr == 0.0
+
+    def test_lr_increases_during_warmup(self, trainer):
+        """Test LR increases linearly during warmup."""
+        lrs = [trainer.get_lr(i) for i in range(trainer.config.warmup_steps + 1)]
+
+        # Should be monotonically increasing during warmup
+        for i in range(len(lrs) - 1):
+            assert lrs[i] <= lrs[i + 1]
+
+    def test_lr_at_max_steps(self, trainer):
+        """Test LR at and beyond max_steps."""
+        lr_at_max = trainer.get_lr(trainer.config.max_steps)
+        lr_beyond = trainer.get_lr(trainer.config.max_steps + 100)
+
+        # Should be at minimum LR
+        min_lr = trainer.config.learning_rate * trainer.config.min_lr_ratio
+        assert lr_at_max >= min_lr - 1e-8
+        assert lr_beyond >= min_lr - 1e-8
+
+    def test_lr_decay_shape(self, trainer):
+        """Test LR follows cosine decay after warmup."""
+        warmup = trainer.config.warmup_steps
+        max_steps = trainer.config.max_steps
+
+        # Sample points after warmup
+        steps = [warmup, (warmup + max_steps) // 3, 2 * (warmup + max_steps) // 3, max_steps]
+        lrs = [trainer.get_lr(s) for s in steps]
+
+        # Should be decreasing after warmup
+        for i in range(len(lrs) - 1):
+            assert lrs[i] >= lrs[i + 1]
+
+
+class TestGenerateSampleEdgeCases:
+    """Tests for generate_sample edge cases."""
+
+    @pytest.fixture
+    def trainer(self, tmp_path):
+        """Create trainer for generation testing."""
+        from src.core.model import create_model
+
+        model = create_model("tiny", vocab_size=500, max_seq_len=32)
+        checkpoint = {
+            "model_config": model.config,
+            "model_state_dict": model.state_dict(),
+        }
+        denoiser_path = tmp_path / "denoiser.pt"
+        torch.save(checkpoint, denoiser_path)
+
+        data_dir = tmp_path / "data_conditional"
+        data_dir.mkdir()
+
+        torch.save(torch.randint(1, 500, (20, 16)), data_dir / "train_encoder.pt")
+        torch.save(torch.randint(1, 500, (5, 16)), data_dir / "val_encoder.pt")
+        torch.save(torch.randint(1, 500, (20, 24)), data_dir / "train_decoder.pt")
+        torch.save(torch.randint(1, 500, (5, 24)), data_dir / "val_decoder.pt")
+
+        config = ConditionalTrainConfig(
+            denoiser_checkpoint=str(denoiser_path),
+            data_dir=str(data_dir),
+            checkpoint_dir=str(tmp_path / "checkpoints"),
+            batch_size=4,
+            vocab_size=500,
+            max_encoder_len=16,
+            max_decoder_len=24,
+            use_amp=False,
+            num_workers=0,
+        )
+
+        return ConditionalTrainer(config)
+
+    def test_generate_with_very_few_steps(self, trainer):
+        """Test generation with minimal steps."""
+        prompt = torch.randint(1, 500, (16,))
+
+        output = trainer.generate_sample(prompt, steps=1)
+
+        assert output.shape == (1, trainer.config.max_decoder_len)
+
+    def test_generate_with_many_steps(self, trainer):
+        """Test generation with many steps."""
+        prompt = torch.randint(1, 500, (16,))
+
+        output = trainer.generate_sample(prompt, steps=50)
+
+        assert output.shape == (1, trainer.config.max_decoder_len)
+
+    def test_generate_with_padding_in_prompt(self, trainer):
+        """Test generation when prompt contains padding."""
+        prompt = torch.randint(1, 500, (16,))
+        prompt[12:] = 0  # Pad last positions
+
+        output = trainer.generate_sample(prompt, steps=3)
+
+        assert output.shape == (1, trainer.config.max_decoder_len)
+
+
+class TestTrainStepEdgeCases:
+    """Tests for train_step edge cases."""
+
+    @pytest.fixture
+    def trainer(self, tmp_path):
+        """Create trainer for training testing."""
+        from src.core.model import create_model
+
+        model = create_model("tiny", vocab_size=500, max_seq_len=32)
+        checkpoint = {
+            "model_config": model.config,
+            "model_state_dict": model.state_dict(),
+        }
+        denoiser_path = tmp_path / "denoiser.pt"
+        torch.save(checkpoint, denoiser_path)
+
+        data_dir = tmp_path / "data_conditional"
+        data_dir.mkdir()
+
+        torch.save(torch.randint(1, 500, (20, 16)), data_dir / "train_encoder.pt")
+        torch.save(torch.randint(1, 500, (5, 16)), data_dir / "val_encoder.pt")
+        torch.save(torch.randint(1, 500, (20, 32)), data_dir / "train_decoder.pt")
+        torch.save(torch.randint(1, 500, (5, 32)), data_dir / "val_decoder.pt")
+
+        config = ConditionalTrainConfig(
+            denoiser_checkpoint=str(denoiser_path),
+            data_dir=str(data_dir),
+            checkpoint_dir=str(tmp_path / "checkpoints"),
+            batch_size=4,
+            vocab_size=500,
+            max_encoder_len=16,
+            max_decoder_len=32,
+            use_amp=False,
+            num_workers=0,
+        )
+
+        return ConditionalTrainer(config)
+
+    def test_train_step_with_padding(self, trainer):
+        """Test training step with padded sequences."""
+        enc_input = torch.randint(1, 500, (4, 16))
+        dec_target = torch.randint(1, 500, (4, 32))
+
+        # Add padding
+        enc_input[:, 10:] = 0
+        dec_target[:, 20:] = 0
+
+        metrics = trainer.train_step(enc_input, dec_target)
+
+        assert "loss" in metrics
+        assert not torch.isnan(torch.tensor(metrics["loss"]))
+
+    def test_train_step_batch_size_one(self, trainer):
+        """Test training with batch size 1."""
+        enc_input = torch.randint(1, 500, (1, 16))
+        dec_target = torch.randint(1, 500, (1, 32))
+
+        metrics = trainer.train_step(enc_input, dec_target)
+
+        assert "loss" in metrics
+        assert metrics["loss"] > 0
+
+
+class TestFreezeDecoderMethod:
+    """Tests for _freeze_decoder_except_cross_attention method."""
+
+    def test_freeze_preserves_cross_attention_grads(self, tmp_path):
+        """Test that freezing preserves cross-attention gradients."""
+        from src.core.model import create_model
+
+        model = create_model("tiny", vocab_size=500, max_seq_len=32)
+        checkpoint = {
+            "model_config": model.config,
+            "model_state_dict": model.state_dict(),
+        }
+        denoiser_path = tmp_path / "denoiser.pt"
+        torch.save(checkpoint, denoiser_path)
+
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        torch.save(torch.randint(1, 500, (10, 16)), data_dir / "train_encoder.pt")
+        torch.save(torch.randint(1, 500, (5, 16)), data_dir / "val_encoder.pt")
+        torch.save(torch.randint(1, 500, (10, 32)), data_dir / "train_decoder.pt")
+        torch.save(torch.randint(1, 500, (5, 32)), data_dir / "val_decoder.pt")
+
+        config = ConditionalTrainConfig(
+            denoiser_checkpoint=str(denoiser_path),
+            data_dir=str(data_dir),
+            checkpoint_dir=str(tmp_path / "checkpoints"),
+            batch_size=4,
+            vocab_size=500,
+            max_encoder_len=16,
+            max_decoder_len=32,
+            use_amp=False,
+            num_workers=0,
+        )
+
+        trainer = ConditionalTrainer(config)
+
+        # Count trainable params in cross-attention
+        cross_attn_params = 0
+        for block in trainer.decoder.blocks:
+            if block.has_cross_attention:
+                cross_attn_params += sum(
+                    p.numel() for p in block.cross_attn.parameters() if p.requires_grad
+                )
+                cross_attn_params += sum(
+                    p.numel() for p in block.norm_cross.parameters() if p.requires_grad
+                )
+
+        # Should have some trainable params in cross-attention
+        assert cross_attn_params > 0

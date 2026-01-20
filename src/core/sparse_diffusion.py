@@ -56,7 +56,6 @@ class SDDConfig:
 
     # Noise injection parameters
     embed_noise_scale: float = 0.1  # Scale for Gaussian noise on embeddings
-    swap_prob_scale: float = 0.95   # Probability of swapping embeddings at max noise
 
 
 class SparseState:
@@ -134,7 +133,9 @@ class SparseDiffusion(nn.Module):
     Forward process (noise injection):
         1. Mix probabilities toward uniform (flatten distribution)
         2. Add Gaussian noise to embeddings (blur token meanings)
-        3. Swap some embeddings with random ones (inject new candidates)
+
+    Note: We do NOT swap indices. This keeps indices meaningful even at high
+    noise levels, allowing the model to learn from the structure of candidates.
 
     Reverse process (denoising):
         1. Model predicts logits over full vocabulary
@@ -213,10 +214,13 @@ class SparseDiffusion(nn.Module):
         """
         Add noise to a sparse state (forward process).
 
-        Noise is added in three ways:
+        Noise is added in TWO ways (no swapping):
         1. Mix probabilities toward uniform (flatten distribution)
         2. Add Gaussian noise to embeddings (blur token meanings)
-        3. Swap some embeddings with random others (inject new candidates)
+
+        Without swapping, the indices remain meaningful even at high noise levels.
+        This allows the model to learn to extract signal from uncertain distributions
+        where the indices still carry information (even if probabilities are flat).
 
         Args:
             state: Clean or partially noisy SparseState
@@ -228,9 +232,6 @@ class SparseDiffusion(nn.Module):
         noise_level = self.get_noise_level(t)  # [batch]
         noise_level = noise_level.view(-1, 1, 1)  # [batch, 1, 1]
 
-        batch_size, seq_len, k = state.probs.shape
-        device = state.device
-
         # 1. Mix probabilities toward uniform (coarse-grained: uniform means 1/vocab_size,
         # representing maximum uncertainty over the full vocabulary)
         uniform_prob = 1.0 / self.config.vocab_size
@@ -241,30 +242,11 @@ class SparseDiffusion(nn.Module):
         embed_noise = torch.randn_like(state.embeds) * self.config.embed_noise_scale
         noisy_embeds = state.embeds + noise_level_4d * embed_noise
 
-        # 3. Swap some embeddings with random ones
-        swap_prob = noise_level.squeeze(-1) * self.config.swap_prob_scale  # [batch, 1]
-        swap_mask = torch.rand(batch_size, seq_len, k, device=device) < swap_prob.unsqueeze(-1)
-
-        # Sample random indices for swapping
-        random_indices = torch.randint(
-            0, self.config.vocab_size,
-            (batch_size, seq_len, k),
-            device=device
-        )
-        random_embeds = self.embedding_table(random_indices)
-
-        # Apply swaps
-        noisy_embeds = torch.where(
-            swap_mask.unsqueeze(-1),
-            random_embeds,
-            noisy_embeds
-        )
-        noisy_indices = torch.where(swap_mask, random_indices, state.indices)
-
+        # NO SWAPPING - indices remain meaningful even at high noise
         return SparseState(
             probs=noisy_probs,
             embeds=noisy_embeds,
-            indices=noisy_indices,
+            indices=state.indices,  # Keep original indices
         )
 
     def state_from_tokens(
