@@ -484,6 +484,9 @@ class TestTrainFunction:
             eval_every=2,
             save_every=5,
             generate_every=100,  # Don't generate during test
+            no_wandb=True,
+            wandb_project="test",
+            wandb_run_name="test",
         )
 
         from src.training.train_ar_text import train
@@ -511,6 +514,9 @@ class TestTrainFunction:
             eval_every=3,
             save_every=5,
             generate_every=100,
+            no_wandb=True,
+            wandb_project="test",
+            wandb_run_name="test",
         )
 
         from src.training.train_ar_text import train
@@ -538,6 +544,9 @@ class TestTrainFunction:
             eval_every=3,
             save_every=100,
             generate_every=100,
+            no_wandb=True,
+            wandb_project="test",
+            wandb_run_name="test",
         )
 
         from src.training.train_ar_text import train
@@ -565,6 +574,9 @@ class TestTrainFunction:
             eval_every=3,
             save_every=5,
             generate_every=100,
+            no_wandb=True,
+            wandb_project="test",
+            wandb_run_name="test",
         )
 
         from src.training.train_ar_text import train

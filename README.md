@@ -52,7 +52,7 @@ Noisy (t=1.0):  "???": 0.01%, "???": 0.01%, "???": 0.01%, "???": 0.01%  (all ran
 
 ## Results
 
-All models trained on TinyStories dataset, ~19M parameters.
+All models trained on TinyStories dataset, ~19M parameters, with matched hyperparameters for fair comparison.
 
 ### Quantitative Comparison
 
@@ -60,18 +60,18 @@ All models trained on TinyStories dataset, ~19M parameters.
 |-------|------------|----------|----------|-------|
 | **AR** | ~1.5 | ~1.8 | 56% | Coherent generation |
 | Discrete Diffusion | ~2.5 | ~2.8 | 38% | Incoherent at this scale |
-| **SDD** (5K steps) | 0.87 | 1.00 | 85% | High accuracy, repetitive generation |
+| **SDD** (10K steps) | 0.58 | 0.81 | 85% | High accuracy, repetitive generation |
 
-### SDD Training Progress (Latest Run)
+### SDD Training Progress (Latest Run: Fixed k=4, 10K steps)
 
-With probability-based swapping and simplified SparseState:
+Standard training with fixed k=4 (no curriculum):
 
 | Steps | Train Loss | Val Loss | Accuracy |
 |-------|------------|----------|----------|
-| 1,000 | 2.2 | 1.5 | 62% |
-| 2,000 | 1.6 | 1.2 | 74% |
-| 3,000 | 1.4 | 1.1 | 77% |
-| 5,000 | 0.87 | 1.0 | 85% |
+| 1,000 | 1.58 | 1.42 | 78% |
+| 2,000 | 1.33 | 1.26 | 80% |
+| 5,000 | 0.93 | 0.97 | 84% |
+| 10,000 | 0.58 | 0.81 | 85% |
 
 ### Generation Quality
 
@@ -80,31 +80,39 @@ With probability-based swapping and simplified SparseState:
 Once upon a time, there was a little girl named Lily. She lived in a big house with her mommy and daddy...
 ```
 
-**SDD** achieves strong training metrics but generation remains repetitive:
+**SDD** achieves strong training metrics but generation shows mode collapse:
 ```
-Tom and a were were in the....
-Tom they and the to in the....
+Step 2000: Anna decided Ben is deep.. tired watched snake..... deep.....
+Step 6000: Anna and Anna are, to the the. says a a a a a the a a a it,.
+Step 10000: Dave loves... always always artist. the offered...ops...ops...
 ```
 
 ### What We've Tried
 
+**Worked:**
 - **Probability-based swapping**: Fixed train/inference mismatch where training saw different distribution than inference initialization
 - **Simplified SparseState**: Removed redundant embeddings field (now looked up from indices)
-- **Curriculum learning** (k=1→2→4→8): Helps early training stability
 - **Full L×k attention**: All candidates attend to all others across positions
+- **Fair comparison infrastructure**: Matched hyperparameters (LR schedule, optimizer, batch size) across AR/MDLM/SDD
+
+**Didn't Work:**
+- **Two-step training** (COLING 2025 approach): Model predicts, re-noises prediction, predicts again. Failed completely - stuck at 7% accuracy. The model can't learn from its own bad predictions early in training (chicken-and-egg problem).
+- **k curriculum (1→2→4→8)**: Intended to ease training, but fixed k=4 works just as well
+- **Longer training**: 10K steps with 85% accuracy still produces repetitive text
 
 ### Conclusions
 
 1. **SDD learns effectively** - 85% accuracy shows the model learns token distributions well
 2. **Generation gap persists** - Good training metrics don't translate to coherent sampling
-3. **The bottleneck is sampling** - The iterative denoising produces repetitive text despite learning
-4. **AR still wins for coherence** - At this scale, autoregressive remains more practical
+3. **The bottleneck is sampling, not training** - The iterative denoising causes mode collapse regardless of prediction accuracy
+4. **Two-step training is a dead end** - Can't bootstrap from random initialization
+5. **AR still wins for coherence** - At this scale, autoregressive remains more practical
 
 ### Open Questions
 
 - Can improved sampling strategies (temperature scheduling, nucleus sampling) fix generation?
-- Does longer training (50K+ steps) improve coherence?
-- Would guidance techniques help steer generation?
+- Would classifier-free guidance or other steering techniques help?
+- Is there a fundamental issue with discrete diffusion at small scale?
 
 ## Quick Start
 
@@ -119,6 +127,10 @@ python src/data/data_prep.py
 python src/training/train_ar_text.py --max_steps 10000        # Autoregressive
 python src/training/train.py --max_steps 10000                 # Discrete Diffusion
 python src/training/train_bilateral.py --max_steps 10000       # SDD
+
+# SDD with experimental options
+python src/training/train_bilateral.py --fixed_k 8            # Skip k curriculum
+python src/training/train_bilateral.py --two_step_training    # Two-step training (experimental)
 
 # Evaluate and compare
 python scripts/evaluate_comparison.py --benchmark
@@ -137,7 +149,7 @@ src/
 ├── data/           # Data preparation (TinyStories)
 └── evaluation/     # Metrics and visualization
 scripts/            # Evaluation and comparison scripts
-tests/              # Test suite (94% coverage)
+tests/              # Test suite (93% coverage)
 ```
 
 ## License

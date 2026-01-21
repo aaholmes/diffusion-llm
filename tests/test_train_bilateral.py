@@ -72,8 +72,8 @@ class TestTrainConfig:
         assert config.d_model == 384
         assert config.n_layers == 6
         assert config.k_schedule == (1, 2, 4, 8)
-        assert config.batch_size == 32
-        assert config.max_steps == 20000
+        assert config.batch_size == 64  # Updated for fair comparison
+        assert config.max_steps == 50000  # Updated for fair comparison
 
     def test_custom_values(self):
         """Test custom configuration values."""
