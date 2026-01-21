@@ -149,19 +149,57 @@ def train(args):
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
-    # Optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=0.1)
+    # Optimizer (matched to MDLM/SDD for fair comparison)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.learning_rate,
+        betas=(0.9, 0.98),
+        weight_decay=0.01,
+    )
 
-    # LR schedule with warmup
+    # LR schedule with warmup and cosine decay (to match MDLM/SDD)
+    import math
     def get_lr(step):
-        if step < args.warmup_steps:
-            return step / args.warmup_steps
-        return 1.0
+        max_lr = args.learning_rate
+        min_lr = max_lr * 0.1  # Decay to 10% like MDLM/SDD
+        warmup_steps = args.warmup_steps
+        max_steps = args.max_steps
 
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, get_lr)
+        if step < warmup_steps:
+            return max_lr * step / warmup_steps
+
+        # Cosine decay
+        progress = (step - warmup_steps) / (max_steps - warmup_steps)
+        progress = min(progress, 1.0)
+        cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
+        return min_lr + (max_lr - min_lr) * cosine_decay
 
     # Training
     os.makedirs(args.checkpoint_dir, exist_ok=True)
+
+    # WandB setup
+    use_wandb = not args.no_wandb
+    if use_wandb:
+        try:
+            import wandb
+            wandb.init(
+                project=args.wandb_project,
+                name=args.wandb_run_name,
+                config={
+                    'model': 'AR',
+                    'd_model': args.d_model,
+                    'n_heads': args.n_heads,
+                    'n_layers': args.n_layers,
+                    'batch_size': args.batch_size,
+                    'learning_rate': args.learning_rate,
+                    'max_steps': args.max_steps,
+                    'warmup_steps': args.warmup_steps,
+                },
+            )
+            print(f"WandB initialized: {wandb.run.url}")
+        except Exception as e:
+            print(f"WandB init failed: {e}, continuing without...")
+            use_wandb = False
 
     scaler = torch.amp.GradScaler('cuda', enabled=(device.type == 'cuda'))
 
@@ -194,13 +232,17 @@ def train(args):
                 ignore_index=0  # Ignore padding
             )
 
+        # Update learning rate
+        lr = get_lr(step)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+
         optimizer.zero_grad()
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         scaler.step(optimizer)
         scaler.update()
-        scheduler.step()
 
         step += 1
 
@@ -212,7 +254,15 @@ def train(args):
                 mask = targets != 0
                 acc = (preds[mask] == targets[mask]).float().mean().item()
 
-            pbar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{acc:.3f}", lr=f"{scheduler.get_last_lr()[0]:.2e}")
+            pbar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{acc:.3f}", lr=f"{lr:.2e}")
+
+            if use_wandb:
+                import wandb
+                wandb.log({
+                    'train/loss': loss.item(),
+                    'train/accuracy': acc,
+                    'train/lr': lr,
+                }, step=step)
 
         pbar.update(1)
 
@@ -252,6 +302,14 @@ def train(args):
 
             print(f"\n[Val] loss={val_loss:.4f}, ppl={val_ppl:.2f}, acc={val_acc:.3f}")
 
+            if use_wandb:
+                import wandb
+                wandb.log({
+                    'val/loss': val_loss,
+                    'val/perplexity': val_ppl,
+                    'val/accuracy': val_acc,
+                }, step=step)
+
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 torch.save({
@@ -290,6 +348,10 @@ def train(args):
     pbar.close()
     print(f"\nTraining complete! Best val loss: {best_val_loss:.4f}")
 
+    if use_wandb:
+        import wandb
+        wandb.finish()
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -303,9 +365,12 @@ def main():
     parser.add_argument('--n_heads', type=int, default=6)
     parser.add_argument('--n_layers', type=int, default=6)
     parser.add_argument('--log_every', type=int, default=50)
-    parser.add_argument('--eval_every', type=int, default=1000)
+    parser.add_argument('--eval_every', type=int, default=500)
     parser.add_argument('--save_every', type=int, default=5000)
     parser.add_argument('--generate_every', type=int, default=5000)
+    parser.add_argument('--no_wandb', action='store_true')
+    parser.add_argument('--wandb_project', type=str, default='diffusion-lm')
+    parser.add_argument('--wandb_run_name', type=str, default='ar-text')
 
     args = parser.parse_args()
     train(args)

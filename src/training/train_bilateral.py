@@ -51,22 +51,29 @@ class TrainConfig:
     # Curriculum for k
     k_schedule: tuple = (1, 2, 4, 8)  # k values to use
     k_warmup_steps: int = 2500  # Steps before increasing k
+    fixed_k: int = 0  # If > 0, use fixed k (no curriculum)
 
     # Training
-    batch_size: int = 32
+    batch_size: int = 64  # Match AR/MDLM for fair comparison
     learning_rate: float = 3e-4
-    max_steps: int = 20000
-    warmup_steps: int = 500
+    max_steps: int = 50000  # Match AR/MDLM for fair comparison
+    warmup_steps: int = 1000  # Match AR/MDLM for fair comparison
     grad_clip: float = 1.0
+    two_step_training: bool = False  # Use two-step training for reduced mismatch
 
     # Logging
     log_every: int = 50
     val_every: int = 500
-    save_every: int = 2000
+    save_every: int = 5000  # Match AR/MDLM for fair comparison
     generate_every: int = 1000  # Generate samples
 
     # Mixed precision
     use_amp: bool = True
+
+    # WandB
+    use_wandb: bool = True
+    wandb_project: str = "diffusion-lm"
+    wandb_run_name: str = "sdd-bilateral"
 
 
 class TextDataset(Dataset):
@@ -100,8 +107,14 @@ class BilateralTrainer:
         vocab_size = self.data_config["vocab_size"]
 
         # Create model based on version
-        # Use max k from schedule for model creation to support k-curriculum
-        max_k = max(config.k_schedule)
+        # Determine initial k: fixed_k if set, otherwise start of curriculum
+        if config.fixed_k > 0:
+            initial_k = config.fixed_k
+            max_k = config.fixed_k
+        else:
+            initial_k = config.k_schedule[0]
+            max_k = max(config.k_schedule)
+
         if config.model_version == "v2":
             self.model, self.sdd_config = create_bilateral_sparse_model(
                 vocab_size=vocab_size,
@@ -113,21 +126,24 @@ class BilateralTrainer:
                 encoder_dim=None,  # No encoder for text-only
                 max_seq_len=config.max_seq_len,
             )
-            # Set initial k for curriculum
-            self.model.config.k = config.k_schedule[0]
-            self.sdd_config.k = config.k_schedule[0]
+            # Set initial k
+            self.model.config.k = initial_k
+            self.sdd_config.k = initial_k
             print(f"Created BilateralSparseDenoiser (v2)")
         else:
             self.model, self.sdd_config = create_sparse_model(
                 vocab_size=vocab_size,
                 embed_dim=config.embed_dim,
-                k=config.k_schedule[0],
+                k=max_k,  # Use max k to support curriculum
                 d_model=config.d_model,
                 n_layers=config.n_layers,
                 n_heads=config.n_heads,
                 encoder_dim=None,  # No encoder for text-only
                 max_seq_len=config.max_seq_len,
             )
+            # Set initial k
+            self.model.config.k = initial_k
+            self.sdd_config.k = initial_k
             print(f"Created SparseDenoiser (v1)")
 
         self.model.to(self.device)
@@ -142,10 +158,11 @@ class BilateralTrainer:
         num_params = sum(p.numel() for p in self.model.parameters())
         print(f"Model parameters: {num_params:,}")
 
-        # Optimizer
+        # Optimizer (matched to AR/MDLM for fair comparison)
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=config.learning_rate,
+            betas=(0.9, 0.98),
             weight_decay=0.01,
         )
 
@@ -166,8 +183,35 @@ class BilateralTrainer:
 
         # State
         self.global_step = 0
-        self.current_k = config.k_schedule[0]
+        self.current_k = config.fixed_k if config.fixed_k > 0 else config.k_schedule[0]
         self.best_val_loss = float("inf")
+
+        # WandB setup
+        self.use_wandb = config.use_wandb
+        if self.use_wandb:
+            try:
+                import wandb
+                wandb.init(
+                    project=config.wandb_project,
+                    name=config.wandb_run_name,
+                    config={
+                        'model': 'SDD',
+                        'model_version': config.model_version,
+                        'd_model': config.d_model,
+                        'n_heads': config.n_heads,
+                        'n_layers': config.n_layers,
+                        'embed_dim': config.embed_dim,
+                        'k_schedule': config.k_schedule,
+                        'batch_size': config.batch_size,
+                        'learning_rate': config.learning_rate,
+                        'max_steps': config.max_steps,
+                        'warmup_steps': config.warmup_steps,
+                    },
+                )
+                print(f"WandB initialized: {wandb.run.url}")
+            except Exception as e:
+                print(f"WandB init failed: {e}, continuing without...")
+                self.use_wandb = False
 
     def _create_dataloader(self, split: str) -> DataLoader:
         """Create dataloader for a split."""
@@ -186,7 +230,12 @@ class BilateralTrainer:
         )
 
     def get_current_k(self) -> int:
-        """Get current k value based on curriculum."""
+        """Get current k value based on curriculum or fixed_k setting."""
+        # If fixed_k is set, use it (no curriculum)
+        if self.config.fixed_k > 0:
+            return self.config.fixed_k
+
+        # Otherwise use curriculum
         k_schedule = self.config.k_schedule
         warmup = self.config.k_warmup_steps
 
@@ -227,12 +276,21 @@ class BilateralTrainer:
 
         # Forward pass with mixed precision
         with torch.amp.autocast("cuda", enabled=self.config.use_amp):
-            loss, metrics = self.diffusion.training_step(
-                self.model,
-                tokens,
-                encoder_output=None,  # No conditioning
-                encoder_mask=None,
-            )
+            # Use two-step training if enabled
+            if self.config.two_step_training:
+                loss, metrics = self.diffusion.training_step_two_step(
+                    self.model,
+                    tokens,
+                    encoder_output=None,  # No conditioning
+                    encoder_mask=None,
+                )
+            else:
+                loss, metrics = self.diffusion.training_step(
+                    self.model,
+                    tokens,
+                    encoder_output=None,  # No conditioning
+                    encoder_mask=None,
+                )
 
         # Backward pass
         self.optimizer.zero_grad()
@@ -363,7 +421,11 @@ class BilateralTrainer:
         print(f"Device: {self.device}")
         print(f"Batch size: {self.config.batch_size}")
         print(f"Max steps: {self.config.max_steps}")
-        print(f"k schedule: {self.config.k_schedule}")
+        if self.config.fixed_k > 0:
+            print(f"Fixed k: {self.config.fixed_k} (no curriculum)")
+        else:
+            print(f"k schedule: {self.config.k_schedule}")
+        print(f"Two-step training: {self.config.two_step_training}")
         print(f"Train samples: {len(self.train_loader.dataset):,}")
         print(f"Val samples: {len(self.val_loader.dataset):,}")
         print("=" * 60)
@@ -405,10 +467,18 @@ class BilateralTrainer:
                 log_str = (
                     f"\nStep {step+1}: loss={metrics['loss']:.4f}, "
                     f"acc={metrics['accuracy']:.3f}, "
-                    f"ignore_acc={metrics.get('ignore_acc', 0):.3f}, "
                     f"k={self.current_k}"
                 )
                 print(log_str)
+
+                if self.use_wandb:
+                    import wandb
+                    wandb.log({
+                        'train/loss': metrics['loss'],
+                        'train/accuracy': metrics['accuracy'],
+                        'train/lr': lr,
+                        'train/k': self.current_k,
+                    }, step=step+1)
 
             # Generate samples
             if (step + 1) % self.config.generate_every == 0:
@@ -425,6 +495,13 @@ class BilateralTrainer:
                     f"\n[Val] loss={val_metrics['val_loss']:.4f}, "
                     f"acc={val_metrics['val_acc']:.3f}"
                 )
+
+                if self.use_wandb:
+                    import wandb
+                    wandb.log({
+                        'val/loss': val_metrics['val_loss'],
+                        'val/accuracy': val_metrics['val_acc'],
+                    }, step=step+1)
 
                 if val_metrics["val_loss"] < self.best_val_loss:
                     self.best_val_loss = val_metrics["val_loss"]
@@ -452,6 +529,10 @@ class BilateralTrainer:
         print(f"Best val loss: {self.best_val_loss:.4f}")
         print("=" * 60)
 
+        if self.use_wandb:
+            import wandb
+            wandb.finish()
+
 
 def main():
     parser = argparse.ArgumentParser(description="Train Sparse Distribution Diffusion")
@@ -459,8 +540,8 @@ def main():
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints_bilateral")
     parser.add_argument("--model_version", type=str, default="v2",
                         choices=["v1", "v2"], help="v1=SparseDenoiser, v2=BilateralSparseDenoiser")
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--max_steps", type=int, default=20000)
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--max_steps", type=int, default=50000)
     parser.add_argument("--learning_rate", type=float, default=3e-4)
     parser.add_argument("--d_model", type=int, default=384)
     parser.add_argument("--n_layers", type=int, default=6)
@@ -469,10 +550,17 @@ def main():
     parser.add_argument("--max_seq_len", type=int, default=256)
     parser.add_argument("--k_schedule", type=str, default="1,2,4,8",
                         help="Comma-separated k values for curriculum")
+    parser.add_argument("--fixed_k", type=int, default=0,
+                        help="If > 0, use fixed k instead of curriculum (e.g., --fixed_k 8)")
+    parser.add_argument("--two_step_training", action="store_true",
+                        help="Use two-step training to reduce training/inference mismatch")
     parser.add_argument("--log_every", type=int, default=50)
     parser.add_argument("--val_every", type=int, default=500)
-    parser.add_argument("--save_every", type=int, default=2000)
+    parser.add_argument("--save_every", type=int, default=5000)
     parser.add_argument("--generate_every", type=int, default=1000)
+    parser.add_argument("--no_wandb", action="store_true")
+    parser.add_argument("--wandb_project", type=str, default="diffusion-lm")
+    parser.add_argument("--wandb_run_name", type=str, default="sdd-bilateral")
 
     args = parser.parse_args()
 
@@ -492,10 +580,15 @@ def main():
         embed_dim=args.embed_dim,
         max_seq_len=args.max_seq_len,
         k_schedule=k_schedule,
+        fixed_k=args.fixed_k,
+        two_step_training=args.two_step_training,
         log_every=args.log_every,
         val_every=args.val_every,
         save_every=args.save_every,
         generate_every=args.generate_every,
+        use_wandb=not args.no_wandb,
+        wandb_project=args.wandb_project,
+        wandb_run_name=args.wandb_run_name,
     )
 
     trainer = BilateralTrainer(config)

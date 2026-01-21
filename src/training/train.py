@@ -72,7 +72,7 @@ class TrainConfig:
     keep_last_n: int = 3
 
     # Logging
-    log_every: int = 10
+    log_every: int = 50  # Match AR/SDD for fair comparison
     use_wandb: bool = True
     wandb_project: str = "diffusion-lm"
     wandb_run_name: Optional[str] = None

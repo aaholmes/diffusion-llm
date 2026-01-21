@@ -332,13 +332,8 @@ class SparseDiffusion(nn.Module):
         batch_size = tokens.shape[0]
         device = tokens.device
 
-        # Replace PAD tokens with IGNORE in targets
-        # This teaches the model to predict IGNORE for "empty" positions
-        targets = tokens.clone()
-        targets[tokens == self.config.pad_token_id] = self.config.ignore_token_id
-
-        # Create clean state from targets (with IGNORE instead of PAD)
-        clean_state = self.state_from_tokens(targets)
+        # Create clean state from tokens
+        clean_state = self.state_from_tokens(tokens)
 
         # Sample random timesteps
         t = torch.rand(batch_size, device=device)
@@ -354,48 +349,116 @@ class SparseDiffusion(nn.Module):
             encoder_mask=encoder_mask,
         )  # [batch, seq_len, vocab_size]
 
-        # Compute weighted cross-entropy loss with noise-aware IGNORE weighting
-        # At high noise (t≈1), focus on content; at low noise (t≈0), also learn IGNORE
-        content_mask = (tokens != self.config.pad_token_id).float()  # [B, L]
-        ignore_mask = (tokens == self.config.pad_token_id).float()   # [B, L]
-
-        # Noise-aware weighting: IGNORE weight scales with (1-t)^2
-        # At t=1: IGNORE weight ≈ 0 (don't penalize, just learn content)
-        # At t=0: IGNORE weight = 1 (fully penalize)
-        t_expanded = t.view(-1, 1)  # [B, 1]
-        ignore_weight = (1 - t_expanded) ** 2  # [B, 1]
-
-        # Content weight stays high (10x), IGNORE weight scales with noise level
-        weights = content_mask * 10.0 + ignore_mask * ignore_weight * 1.0
-        weights = weights.view(-1)
-
-        # Per-token cross-entropy
-        per_token_loss = F.cross_entropy(
+        # Simple cross-entropy loss, ignoring padding (like AR)
+        loss = F.cross_entropy(
             logits.view(-1, self.config.vocab_size),
-            targets.view(-1),
-            reduction='none',
+            tokens.view(-1),
+            ignore_index=self.config.pad_token_id,
         )
 
-        # Weighted mean (add small epsilon to avoid division issues)
-        loss = (per_token_loss * weights).sum() / (weights.sum() + 1e-8)
-
-        # Compute metrics (accuracy on content tokens only, for comparability)
+        # Compute metrics
         with torch.no_grad():
             preds = logits.argmax(dim=-1)
             content_mask = tokens != self.config.pad_token_id
-            content_correct = (preds == targets) & content_mask
-            content_accuracy = content_correct.float().sum() / content_mask.float().sum()
-
-            # Also track IGNORE accuracy (how well model predicts IGNORE for padding)
-            ignore_mask = tokens == self.config.pad_token_id
-            ignore_correct = (preds == self.config.ignore_token_id) & ignore_mask
-            ignore_accuracy = ignore_correct.float().sum() / (ignore_mask.float().sum() + 1e-8)
+            correct = (preds == tokens) & content_mask
+            accuracy = correct.float().sum() / content_mask.float().sum()
 
         metrics = {
             "loss": loss.item(),
-            "accuracy": content_accuracy.item(),  # Content token accuracy
-            "ignore_acc": ignore_accuracy.item(),  # IGNORE prediction accuracy
+            "accuracy": accuracy.item(),
             "mean_t": t.mean().item(),
+        }
+
+        return loss, metrics
+
+    def training_step_two_step(
+        self,
+        model: nn.Module,
+        tokens: torch.Tensor,
+        encoder_output: Optional[torch.Tensor] = None,
+        encoder_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        """
+        Two-step training to reduce training/inference mismatch.
+
+        Based on COLING 2025 paper "Training-Inference Discrepancy in Discrete
+        Diffusion Language Models". The model learns to work with its own
+        (potentially wrong) intermediate predictions.
+
+        Process:
+        1. Add noise to clean state at level t
+        2. Get model's prediction (detached)
+        3. Re-noise the prediction at level t_next (slightly less noise)
+        4. Get final prediction and compute loss
+
+        This helps the model learn to recover from its own mistakes during
+        iterative denoising, reducing the gap between training (GT-derived states)
+        and inference (self-generated states).
+
+        Args:
+            model: SparseDenoiser model
+            tokens: Ground truth tokens [batch, seq_len]
+            encoder_output: Optional conditioning
+            encoder_mask: Optional mask for encoder output
+
+        Returns:
+            loss: Scalar loss value
+            metrics: Dictionary of training metrics
+        """
+        batch_size = tokens.shape[0]
+        device = tokens.device
+
+        # Create clean state from tokens
+        clean_state = self.state_from_tokens(tokens)
+
+        # Sample random timesteps
+        t = torch.rand(batch_size, device=device)
+
+        # Step 1: Add noise to clean state
+        noisy_state = self.add_noise(clean_state, t)
+
+        # Step 2: Get model's prediction (detached - no gradients through this)
+        with torch.no_grad():
+            intermediate_state = model.denoise_step(
+                noisy_state,
+                t,
+                encoder_output=encoder_output,
+                encoder_mask=encoder_mask,
+                temperature=1.0,  # Use temperature=1 for training
+            )
+
+        # Step 3: Re-noise the intermediate prediction at slightly lower noise
+        # This simulates the model seeing its own predictions in the next step
+        t_next = t * 0.8  # 80% of original noise level
+        renoised_state = self.add_noise(intermediate_state, t_next)
+
+        # Step 4: Get final prediction and compute loss
+        logits = model(
+            renoised_state,
+            t_next,
+            encoder_output=encoder_output,
+            encoder_mask=encoder_mask,
+        )
+
+        # Cross-entropy loss on ground truth tokens
+        loss = F.cross_entropy(
+            logits.view(-1, self.config.vocab_size),
+            tokens.view(-1),
+            ignore_index=self.config.pad_token_id,
+        )
+
+        # Compute metrics
+        with torch.no_grad():
+            preds = logits.argmax(dim=-1)
+            content_mask = tokens != self.config.pad_token_id
+            correct = (preds == tokens) & content_mask
+            accuracy = correct.float().sum() / content_mask.float().sum()
+
+        metrics = {
+            "loss": loss.item(),
+            "accuracy": accuracy.item(),
+            "mean_t": t.mean().item(),
+            "mean_t_next": t_next.mean().item(),
         }
 
         return loss, metrics

@@ -46,6 +46,7 @@ class SparseModelConfig:
     vocab_size: int = 8192
     embed_dim: int = 64      # Embedding dimension (compact)
     k: int = 8               # Number of top-k tokens per position
+    normalize_embeddings: bool = True  # Normalize embeddings to unit sphere
 
     # Transformer architecture
     d_model: int = 768       # Transformer hidden dimension
@@ -620,6 +621,11 @@ class BilateralSparseDenoiser(nn.Module):
         # 1. Look up token embeddings from indices
         token_emb = self.token_embedding(state.indices)  # [B, L, k, E]
 
+        # Normalize embeddings to unit sphere if configured
+        # This makes magnitude encode confidence: certain=on sphere, uncertain=toward origin
+        if self.config.normalize_embeddings:
+            token_emb = F.normalize(token_emb, p=2, dim=-1)
+
         # 2. Encode probabilities
         prob_emb = self.prob_encoder(state.probs.unsqueeze(-1))  # [B, L, k, E]
 
@@ -805,6 +811,11 @@ class SparseDenoiser(nn.Module):
         """
         # Look up embeddings from indices
         embeds = self.token_embedding(state.indices)  # [B, L, k, E]
+
+        # Normalize embeddings to unit sphere if configured
+        # This makes magnitude encode confidence: certain=on sphere, uncertain=toward origin
+        if self.config.normalize_embeddings:
+            embeds = F.normalize(embeds, p=2, dim=-1)
 
         # Weighted sum: sum_j(p_j * e_j)
         # probs: [B, L, k] → [B, L, k, 1]
