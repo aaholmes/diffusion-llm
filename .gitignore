@@ -18,3 +18,4 @@ nohup.out
 *.sh
 debug_generation.py
 CLAUDE.md
+wandb/

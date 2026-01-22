@@ -58,9 +58,19 @@ All models trained on TinyStories dataset, ~19M parameters, with matched hyperpa
 
 | Model | Train Loss | Val Loss | Accuracy | Notes |
 |-------|------------|----------|----------|-------|
-| **AR** | ~1.5 | ~1.8 | 56% | Coherent generation |
+| **AR (Muon)** | ~1.4 | ~1.76 | 52% | Coherent generation, best optimizer |
+| AR (AdamW) | ~1.5 | ~2.15 | 45% | Standard baseline |
 | Discrete Diffusion | ~2.5 | ~2.8 | 38% | Incoherent at this scale |
 | **SDD** (10K steps) | 0.58 | 0.81 | 85% | High accuracy, repetitive generation |
+
+### AR Optimizer Comparison (5K steps)
+
+| Optimizer | Val Loss | Val PPL | Accuracy | Notes |
+|-----------|----------|---------|----------|-------|
+| **Muon + AdamW** | **1.76** | **5.8** | **52%** | 18% better than AdamW alone |
+| AdamW | 2.15 | 8.6 | 45% | Standard baseline |
+
+[Muon](https://github.com/KellerJordan/Muon) is a momentum-based optimizer that uses Newton-Schulz orthogonalization. We use Muon for 2D weight matrices in transformer layers (where it excels) and AdamW for embeddings and output projection (1D params and embedding lookups).
 
 ### SDD Training Progress (Latest Run: Fixed k=4, 10K steps)
 
@@ -90,6 +100,7 @@ Step 10000: Dave loves... always always artist. the offered...ops...ops...
 ### What We've Tried
 
 **Worked:**
+- **Muon optimizer for AR**: 18% better validation loss than AdamW (1.76 vs 2.15 at 5K steps). Muon uses Newton-Schulz orthogonalization for hidden layer weights, with AdamW for embeddings/output.
 - **Probability-based swapping**: Fixed train/inference mismatch where training saw different distribution than inference initialization
 - **Simplified SparseState**: Removed redundant embeddings field (now looked up from indices)
 - **Full L×k attention**: All candidates attend to all others across positions
@@ -117,14 +128,15 @@ Step 10000: Dave loves... always always artist. the offered...ops...ops...
 ## Quick Start
 
 ```bash
-# Setup
+# Setup (PyTorch 2.9+ required for Muon optimizer)
 pip install torch transformers datasets tokenizers tqdm wandb
 
 # Prepare data (downloads TinyStories, trains tokenizer)
 python src/data/data_prep.py
 
 # Train (pick one)
-python src/training/train_ar_text.py --max_steps 10000        # Autoregressive
+python src/training/train_ar_text.py --max_steps 10000        # Autoregressive (AdamW)
+python src/training/train_ar_text.py --max_steps 10000 --optimizer muon  # AR with Muon (recommended)
 python src/training/train.py --max_steps 10000                 # Discrete Diffusion
 python src/training/train_bilateral.py --max_steps 10000       # SDD
 

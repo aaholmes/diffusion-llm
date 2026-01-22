@@ -149,30 +149,70 @@ def train(args):
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
-    # Optimizer (matched to MDLM/SDD for fair comparison)
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=args.learning_rate,
-        betas=(0.9, 0.98),
-        weight_decay=0.01,
-    )
+    # Optimizer setup
+    if args.optimizer == 'muon':
+        # Muon for hidden layers, AdamW for embeddings and output
+        # Muon only works on 2D parameters (weight matrices)
+        muon_params = []
+        adamw_params = []
+
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            # Embeddings and output projection use AdamW
+            if 'embedding' in name or 'output_proj' in name:
+                adamw_params.append(param)
+            # 2D parameters (weight matrices) in transformer use Muon
+            elif param.ndim == 2:
+                muon_params.append(param)
+            # 1D parameters (biases, layer norm) use AdamW
+            else:
+                adamw_params.append(param)
+
+        print(f"Muon params: {sum(p.numel() for p in muon_params):,}")
+        print(f"AdamW params: {sum(p.numel() for p in adamw_params):,}")
+
+        # Muon uses higher LR (typically 0.02 vs 3e-4 for AdamW)
+        muon_lr = args.learning_rate * 50  # Scale up for Muon
+        optimizer_muon = torch.optim.Muon(
+            muon_params,
+            lr=muon_lr,
+            momentum=0.95,
+        )
+        optimizer_adamw = torch.optim.AdamW(
+            adamw_params,
+            lr=args.learning_rate,
+            betas=(0.9, 0.98),
+            weight_decay=0.01,
+        )
+        optimizers = [optimizer_muon, optimizer_adamw]
+        print(f"Using Muon (lr={muon_lr}) + AdamW (lr={args.learning_rate})")
+    else:
+        # Standard AdamW for all parameters
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=args.learning_rate,
+            betas=(0.9, 0.98),
+            weight_decay=0.01,
+        )
+        optimizers = [optimizer]
+        print(f"Using AdamW (lr={args.learning_rate})")
 
     # LR schedule with warmup and cosine decay (to match MDLM/SDD)
     import math
-    def get_lr(step):
-        max_lr = args.learning_rate
-        min_lr = max_lr * 0.1  # Decay to 10% like MDLM/SDD
+    def get_lr_scale(step):
+        """Returns scale factor for LR (0 to 1)."""
         warmup_steps = args.warmup_steps
         max_steps = args.max_steps
 
         if step < warmup_steps:
-            return max_lr * step / warmup_steps
+            return step / warmup_steps
 
-        # Cosine decay
+        # Cosine decay to 10%
         progress = (step - warmup_steps) / (max_steps - warmup_steps)
         progress = min(progress, 1.0)
         cosine_decay = 0.5 * (1 + math.cos(math.pi * progress))
-        return min_lr + (max_lr - min_lr) * cosine_decay
+        return 0.1 + 0.9 * cosine_decay  # Decay from 1.0 to 0.1
 
     # Training
     os.makedirs(args.checkpoint_dir, exist_ok=True)
@@ -187,6 +227,7 @@ def train(args):
                 name=args.wandb_run_name,
                 config={
                     'model': 'AR',
+                    'optimizer': args.optimizer,
                     'd_model': args.d_model,
                     'n_heads': args.n_heads,
                     'n_layers': args.n_layers,
@@ -232,16 +273,30 @@ def train(args):
                 ignore_index=0  # Ignore padding
             )
 
-        # Update learning rate
-        lr = get_lr(step)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
+        # Update learning rate for all optimizers
+        lr_scale = get_lr_scale(step)
+        for opt in optimizers:
+            for param_group in opt.param_groups:
+                # Scale from the base LR set during optimizer creation
+                base_lr = param_group.get('initial_lr', param_group['lr'])
+                if 'initial_lr' not in param_group:
+                    param_group['initial_lr'] = param_group['lr']
+                param_group['lr'] = base_lr * lr_scale
 
-        optimizer.zero_grad()
+        # Zero gradients for all optimizers
+        for opt in optimizers:
+            opt.zero_grad()
+
         scaler.scale(loss).backward()
-        scaler.unscale_(optimizer)
+
+        # Unscale and clip for all optimizers
+        for opt in optimizers:
+            scaler.unscale_(opt)
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        scaler.step(optimizer)
+
+        # Step all optimizers
+        for opt in optimizers:
+            scaler.step(opt)
         scaler.update()
 
         step += 1
@@ -254,14 +309,16 @@ def train(args):
                 mask = targets != 0
                 acc = (preds[mask] == targets[mask]).float().mean().item()
 
-            pbar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{acc:.3f}", lr=f"{lr:.2e}")
+            # Show AdamW LR (last optimizer in list)
+            current_lr = optimizers[-1].param_groups[0]['lr']
+            pbar.set_postfix(loss=f"{loss.item():.4f}", acc=f"{acc:.3f}", lr=f"{current_lr:.2e}")
 
             if use_wandb:
                 import wandb
                 wandb.log({
                     'train/loss': loss.item(),
                     'train/accuracy': acc,
-                    'train/lr': lr,
+                    'train/lr': current_lr,
                 }, step=step)
 
         pbar.update(1)
@@ -368,6 +425,8 @@ def main():
     parser.add_argument('--eval_every', type=int, default=500)
     parser.add_argument('--save_every', type=int, default=5000)
     parser.add_argument('--generate_every', type=int, default=5000)
+    parser.add_argument('--optimizer', type=str, default='adamw', choices=['adamw', 'muon'],
+                        help='Optimizer: adamw (default) or muon (Muon for hidden layers)')
     parser.add_argument('--no_wandb', action='store_true')
     parser.add_argument('--wandb_project', type=str, default='diffusion-lm')
     parser.add_argument('--wandb_run_name', type=str, default='ar-text')

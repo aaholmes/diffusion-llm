@@ -484,6 +484,7 @@ class TestTrainFunction:
             eval_every=2,
             save_every=5,
             generate_every=100,  # Don't generate during test
+            optimizer="adamw",
             no_wandb=True,
             wandb_project="test",
             wandb_run_name="test",
@@ -514,6 +515,7 @@ class TestTrainFunction:
             eval_every=3,
             save_every=5,
             generate_every=100,
+            optimizer="adamw",
             no_wandb=True,
             wandb_project="test",
             wandb_run_name="test",
@@ -544,6 +546,7 @@ class TestTrainFunction:
             eval_every=3,
             save_every=100,
             generate_every=100,
+            optimizer="adamw",
             no_wandb=True,
             wandb_project="test",
             wandb_run_name="test",
@@ -574,6 +577,7 @@ class TestTrainFunction:
             eval_every=3,
             save_every=5,
             generate_every=100,
+            optimizer="adamw",
             no_wandb=True,
             wandb_project="test",
             wandb_run_name="test",
@@ -588,6 +592,37 @@ class TestTrainFunction:
         assert "model_state_dict" in ckpt
         assert "config" in ckpt
         assert "step" in ckpt
+
+    def test_train_with_muon_optimizer(self, mock_data_dir, temp_dir):
+        """Test training with Muon optimizer."""
+        import argparse
+
+        ckpt_dir = os.path.join(temp_dir, "ckpts_muon")
+        args = argparse.Namespace(
+            data_dir=mock_data_dir,
+            checkpoint_dir=ckpt_dir,
+            batch_size=8,
+            max_steps=3,
+            learning_rate=1e-3,
+            warmup_steps=1,
+            d_model=64,
+            n_heads=2,
+            n_layers=2,
+            log_every=1,
+            eval_every=2,
+            save_every=5,
+            generate_every=100,
+            optimizer="muon",
+            no_wandb=True,
+            wandb_project="test",
+            wandb_run_name="test",
+        )
+
+        from src.training.train_ar_text import train
+        train(args)
+
+        # Check checkpoint dir was created
+        assert os.path.exists(args.checkpoint_dir)
 
 
 # =============================================================================
