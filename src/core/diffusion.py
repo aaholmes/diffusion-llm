@@ -206,12 +206,19 @@ class DiscreteDiffusion:
         t_next: torch.Tensor,
         temperature: float = 1.0,
         top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
         attention_mask: Optional[torch.Tensor] = None,
         encoder_output: Optional[torch.Tensor] = None,
         encoder_attention_mask: Optional[torch.Tensor] = None,
+        allow_recorruption: bool = False,
+        recorruption_rate: float = 0.1,
     ) -> torch.Tensor:
         """
         Single reverse process step: denoise from t to t_next.
+
+        Implements proper MDLM transition probabilities:
+        - For masked positions: unmask with prob = 1 - (next_mask_rate / current_mask_rate)
+        - For unmasked positions: optionally re-corrupt with small probability
 
         Args:
             model: DiffusionTransformer
@@ -220,9 +227,12 @@ class DiscreteDiffusion:
             t_next: Next noise level [batch_size] (t_next < t)
             temperature: Sampling temperature
             top_k: Optional top-k filtering
+            top_p: Optional nucleus (top-p) filtering
             attention_mask: Optional attention mask
             encoder_output: Optional encoder output for conditioning
             encoder_attention_mask: Optional mask for encoder
+            allow_recorruption: Whether to allow re-masking unmasked tokens
+            recorruption_rate: Fraction of step's unmask prob to use for re-corruption
 
         Returns:
             x_denoised: Less noisy tokens [batch_size, seq_len]
@@ -244,7 +254,6 @@ class DiscreteDiffusion:
 
         # Apply top-k filtering
         if top_k is not None and top_k > 0:
-            # Zero out logits below top-k
             top_k_vals, _ = torch.topk(logits, min(top_k, logits.size(-1)), dim=-1)
             threshold = top_k_vals[..., -1:]
             logits = torch.where(
@@ -253,6 +262,22 @@ class DiscreteDiffusion:
                 logits
             )
 
+        # Apply nucleus (top-p) filtering
+        if top_p is not None and 0.0 < top_p < 1.0:
+            sorted_logits, sorted_indices = torch.sort(logits, dim=-1, descending=True)
+            sorted_probs = F.softmax(sorted_logits, dim=-1)
+            cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+            # Remove tokens with cumulative probability above threshold
+            sorted_indices_to_remove = cumulative_probs > top_p
+            # Keep at least one token
+            sorted_indices_to_remove[..., 0] = False
+            # Shift to include first token above threshold
+            sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+            # Scatter back to original indexing
+            indices_to_remove = torch.zeros_like(logits, dtype=torch.bool)
+            indices_to_remove.scatter_(-1, sorted_indices, sorted_indices_to_remove)
+            logits = logits.masked_fill(indices_to_remove, float('-inf'))
+
         # Sample from predicted distribution
         probs = F.softmax(logits, dim=-1)
         # Reshape for multinomial: [batch * seq_len, vocab_size]
@@ -260,28 +285,37 @@ class DiscreteDiffusion:
         sampled_flat = torch.multinomial(probs_flat, num_samples=1)
         sampled = sampled_flat.view(batch_size, seq_len)
 
-        # Determine which masks to keep vs. unmask
-        # Current and next mask rates
+        # MDLM transition probabilities
         current_mask_rate = self.get_mask_rate(t).unsqueeze(1)  # [batch, 1]
         next_mask_rate = self.get_mask_rate(t_next).unsqueeze(1)  # [batch, 1]
 
-        # Probability of keeping a mask (ratio of mask rates)
-        # At t, we have current_mask_rate fraction masked
-        # At t_next, we want next_mask_rate fraction masked
-        # So we keep (next_mask_rate / current_mask_rate) of current masks
-        keep_mask_prob = (next_mask_rate / current_mask_rate.clamp(min=1e-8)).clamp(max=1.0)
+        # Probability of unmasking = (current - next) / current
+        # This is the proper MDLM formulation
+        unmask_prob = ((current_mask_rate - next_mask_rate) /
+                       current_mask_rate.clamp(min=1e-8)).clamp(min=0.0, max=1.0)
 
-        # For each currently masked position, decide whether to keep it masked
+        # Identify masked and unmasked positions
         is_masked = (x == self.mask_token_id)
+        is_pad = (x == self.pad_token_id)
+
+        # Decide which masked positions to unmask
         rand = torch.rand(batch_size, seq_len, device=device)
-        keep_mask = rand < keep_mask_prob
+        unmask = is_masked & (rand < unmask_prob)
 
-        # Unmask positions: currently masked AND not keeping the mask
-        unmask = is_masked & ~keep_mask
-
-        # Update tokens
+        # Start with current tokens
         x_denoised = x.clone()
+
+        # Unmask selected positions with sampled tokens
         x_denoised[unmask] = sampled[unmask]
+
+        # Optional: re-corruption of unmasked positions (Bug 3 fix)
+        # This allows some exploration during sampling
+        if allow_recorruption and recorruption_rate > 0:
+            # Re-mask a small fraction of currently unmasked positions
+            # Probability scales with remaining noise level
+            recorrupt_prob = recorruption_rate * next_mask_rate
+            recorrupt = (~is_masked) & (~is_pad) & (rand < recorrupt_prob)
+            x_denoised[recorrupt] = self.mask_token_id
 
         return x_denoised
 
@@ -294,11 +328,16 @@ class DiscreteDiffusion:
         num_steps: int = 50,
         temperature: float = 1.0,
         top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
         device: str = "cuda",
         prompt: Optional[torch.Tensor] = None,
+        prompt_mode: str = "fixed",
         attention_mask: Optional[torch.Tensor] = None,
         encoder_output: Optional[torch.Tensor] = None,
         encoder_attention_mask: Optional[torch.Tensor] = None,
+        allow_recorruption: bool = False,
+        recorruption_rate: float = 0.1,
+        temperature_schedule: Optional[str] = None,
     ) -> torch.Tensor:
         """
         Generate sequences by iterative denoising.
@@ -310,11 +349,21 @@ class DiscreteDiffusion:
             num_steps: Number of denoising steps
             temperature: Sampling temperature (lower = more deterministic)
             top_k: Optional top-k filtering
+            top_p: Optional nucleus (top-p) filtering (e.g., 0.9, 0.95)
             device: Device to use
             prompt: Optional prompt tokens [batch_size, prompt_len] (for prefix conditioning)
+            prompt_mode: How to handle prompt:
+                - "fixed": Hard-fix prompt at end (original behavior)
+                - "soft": Allow model to see prompt but generate freely (bidirectional)
             attention_mask: Optional attention mask
             encoder_output: Optional encoder output for cross-attention conditioning
             encoder_attention_mask: Optional mask for encoder
+            allow_recorruption: Whether to allow re-masking during sampling
+            recorruption_rate: Fraction of step's unmask prob for re-corruption
+            temperature_schedule: Optional schedule for temperature:
+                - None: Use constant temperature
+                - "linear_decay": 1.5 -> 0.5 over steps
+                - "cosine_decay": Cosine annealing from 1.5 to 0.5
 
         Returns:
             samples: Generated token indices [batch_size, seq_len]
@@ -329,6 +378,7 @@ class DiscreteDiffusion:
 
         # Handle prompt (for prefix-style conditioning)
         if prompt is not None:
+            prompt = prompt.to(device)
             prompt_len = prompt.shape[1]
             assert prompt.shape[0] == batch_size, "Prompt batch size must match"
             assert prompt_len < seq_len, "Prompt must be shorter than seq_len"
@@ -349,18 +399,47 @@ class DiscreteDiffusion:
             t = timesteps[i].expand(batch_size)
             t_next = timesteps[i + 1].expand(batch_size)
 
+            # Compute temperature for this step
+            if temperature_schedule is None:
+                step_temp = temperature
+            elif temperature_schedule == "linear_decay":
+                # Linear decay: 1.5 -> 0.5
+                progress = i / max(num_steps - 1, 1)
+                step_temp = 1.5 - 1.0 * progress
+            elif temperature_schedule == "cosine_decay":
+                # Cosine decay: 1.5 -> 0.5
+                progress = i / max(num_steps - 1, 1)
+                step_temp = 0.5 + 1.0 * (1 + torch.cos(torch.tensor(progress * 3.14159))) / 2
+                step_temp = step_temp.item()
+            else:
+                step_temp = temperature
+
             x = self.p_sample_step(
                 model, x, t, t_next,
-                temperature=temperature,
+                temperature=step_temp,
                 top_k=top_k,
+                top_p=top_p,
                 attention_mask=attention_mask,
                 encoder_output=encoder_output,
                 encoder_attention_mask=encoder_attention_mask,
+                allow_recorruption=allow_recorruption,
+                recorruption_rate=recorruption_rate,
             )
 
-            # Keep prompt fixed (for prefix conditioning)
+            # Handle prompt based on mode
             if prompt is not None:
-                x[:, :prompt_len] = prompt
+                if prompt_mode == "fixed":
+                    # Original behavior: hard-fix prompt every step
+                    x[:, :prompt_len] = prompt
+                elif prompt_mode == "soft":
+                    # Soft mode: only ensure prompt positions aren't masked
+                    # (they participate in bidirectional attention normally)
+                    is_prompt_masked = (x[:, :prompt_len] == self.mask_token_id)
+                    x[:, :prompt_len] = torch.where(
+                        is_prompt_masked,
+                        prompt,
+                        x[:, :prompt_len]
+                    )
 
         return x
 
@@ -372,7 +451,9 @@ class DiscreteDiffusion:
         num_steps: int = 50,
         temperature: float = 1.0,
         top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
         device: str = "cuda",
+        temperature_schedule: Optional[str] = None,
     ) -> Tuple[torch.Tensor, list]:
         """
         Sample with trajectory recording (for visualization).
@@ -393,7 +474,25 @@ class DiscreteDiffusion:
             t = timesteps[i].expand(batch_size)
             t_next = timesteps[i + 1].expand(batch_size)
 
-            x = self.p_sample_step(model, x, t, t_next, temperature, top_k)
+            # Compute temperature for this step
+            if temperature_schedule is None:
+                step_temp = temperature
+            elif temperature_schedule == "linear_decay":
+                progress = i / max(num_steps - 1, 1)
+                step_temp = 1.5 - 1.0 * progress
+            elif temperature_schedule == "cosine_decay":
+                progress = i / max(num_steps - 1, 1)
+                step_temp = 0.5 + 1.0 * (1 + torch.cos(torch.tensor(progress * 3.14159))) / 2
+                step_temp = step_temp.item()
+            else:
+                step_temp = temperature
+
+            x = self.p_sample_step(
+                model, x, t, t_next,
+                temperature=step_temp,
+                top_k=top_k,
+                top_p=top_p,
+            )
             trajectory.append(x.clone())
 
         return x, trajectory

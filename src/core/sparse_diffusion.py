@@ -471,9 +471,12 @@ class SparseDiffusion(nn.Module):
         seq_len: int,
         num_steps: int = 25,
         temperature: float = 1.0,
+        top_p: Optional[float] = None,
         encoder_output: Optional[torch.Tensor] = None,
         encoder_mask: Optional[torch.Tensor] = None,
         device: str = "cuda",
+        temperature_schedule: Optional[str] = None,
+        confidence_based: bool = False,
     ) -> Tuple[torch.Tensor, SparseState]:
         """
         Generate sequences by iterative denoising (DDIM-style deterministic).
@@ -489,10 +492,17 @@ class SparseDiffusion(nn.Module):
             batch_size: Number of sequences to generate
             seq_len: Length of sequences
             num_steps: Number of denoising steps
-            temperature: Sampling temperature (lower = more confident)
+            temperature: Base sampling temperature (lower = more confident)
+            top_p: Optional nucleus sampling threshold (e.g., 0.9, 0.95)
             encoder_output: Optional conditioning
             encoder_mask: Optional encoder mask
             device: Device to use
+            temperature_schedule: Optional schedule for temperature:
+                - None: Use constant temperature
+                - "linear_decay": 1.5 -> 0.5 over steps (explore early, exploit late)
+                - "cosine_decay": Cosine annealing from 1.5 to 0.5
+                - "inverse": Start low (0.5), go high (1.5), then low again
+            confidence_based: If True, weight updates by model confidence
 
         Returns:
             tokens: Final discrete tokens [batch, seq_len]
@@ -516,12 +526,32 @@ class SparseDiffusion(nn.Module):
         for i in range(num_steps):
             t_curr = timesteps[i].expand(batch_size)
 
-            # Get model prediction with temperature
+            # Compute temperature for this step
+            if temperature_schedule is None:
+                step_temp = temperature
+            elif temperature_schedule == "linear_decay":
+                # Linear decay: 1.5 -> 0.5 (explore early, exploit late)
+                progress = i / max(num_steps - 1, 1)
+                step_temp = 1.5 - 1.0 * progress
+            elif temperature_schedule == "cosine_decay":
+                # Cosine decay: 1.5 -> 0.5
+                progress = i / max(num_steps - 1, 1)
+                step_temp = 0.5 + 1.0 * (1 + math.cos(progress * math.pi)) / 2
+            elif temperature_schedule == "inverse":
+                # Start low, go high in middle, then low again
+                # Good for: initial structure -> exploration -> final commitment
+                progress = i / max(num_steps - 1, 1)
+                step_temp = 0.5 + 1.0 * math.sin(progress * math.pi)
+            else:
+                step_temp = temperature
+
+            # Get model prediction with temperature and optional top-p
             state = model.denoise_step(
                 state, t_curr,
                 encoder_output=encoder_output,
                 encoder_mask=encoder_mask,
-                temperature=temperature,
+                temperature=step_temp,
+                top_p=top_p,
             )
 
             # NOTE: No re-noising between steps!

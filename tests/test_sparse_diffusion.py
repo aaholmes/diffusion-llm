@@ -359,7 +359,7 @@ class TestSparseDiffusionSampling:
                 return self
 
             def denoise_step(self, state, t, encoder_output=None, encoder_mask=None,
-                           temperature=1.0):
+                           temperature=1.0, top_p=None):
                 # Return random new state
                 B, L, k = state.probs.shape
                 new_probs = torch.softmax(torch.randn(B, L, k), dim=-1)
@@ -455,3 +455,273 @@ class TestSparseDiffusionDecoding:
         assert len(results) == 1
         # Should be empty or whitespace only
         assert results[0].strip() == ""
+
+
+# =============================================================================
+# Tests: SDD New Features (Sampling Improvements)
+# =============================================================================
+
+class TestSDDTemperatureSchedule:
+    """Tests for temperature scheduling in SDD sampling."""
+
+    @pytest.fixture
+    def mock_denoiser(self, sdd_config, embedding_table):
+        """Create a mock denoiser with denoise_step method."""
+        class MockDenoiser(nn.Module):
+            def __init__(self, config, emb_table):
+                super().__init__()
+                self.config = config
+                self.token_embedding = emb_table
+                self.temperature_history = []
+
+            def eval(self):
+                return self
+
+            def denoise_step(self, state, t, encoder_output=None, encoder_mask=None,
+                           temperature=1.0, top_p=None):
+                # Track temperature for testing
+                self.temperature_history.append(temperature)
+                B, L, k = state.probs.shape
+                new_probs = torch.softmax(torch.randn(B, L, k), dim=-1)
+                new_indices = torch.randint(0, self.config.vocab_size, (B, L, k))
+                return SparseState(probs=new_probs, indices=new_indices)
+
+        return MockDenoiser(sdd_config, embedding_table)
+
+    def test_linear_decay_schedule(self, diffusion, mock_denoiser):
+        """Test sampling with linear decay temperature schedule."""
+        tokens, _ = diffusion.sample(
+            mock_denoiser,
+            batch_size=2,
+            seq_len=8,
+            num_steps=10,
+            temperature_schedule="linear_decay",
+            device="cpu",
+        )
+
+        assert tokens.shape == (2, 8)
+        # Check temperatures are decreasing
+        temps = mock_denoiser.temperature_history
+        assert len(temps) == 10
+        # First temp should be higher than last
+        assert temps[0] > temps[-1]
+
+    def test_cosine_decay_schedule(self, diffusion, mock_denoiser):
+        """Test sampling with cosine decay temperature schedule."""
+        tokens, _ = diffusion.sample(
+            mock_denoiser,
+            batch_size=2,
+            seq_len=8,
+            num_steps=10,
+            temperature_schedule="cosine_decay",
+            device="cpu",
+        )
+
+        assert tokens.shape == (2, 8)
+
+    def test_inverse_schedule(self, diffusion, mock_denoiser):
+        """Test sampling with inverse temperature schedule."""
+        tokens, _ = diffusion.sample(
+            mock_denoiser,
+            batch_size=2,
+            seq_len=8,
+            num_steps=10,
+            temperature_schedule="inverse",
+            device="cpu",
+        )
+
+        assert tokens.shape == (2, 8)
+        # Check middle temps are higher than start/end
+        temps = mock_denoiser.temperature_history
+        middle_idx = len(temps) // 2
+        assert temps[middle_idx] > temps[0]
+        assert temps[middle_idx] > temps[-1]
+
+    def test_constant_temperature(self, diffusion, mock_denoiser):
+        """Test sampling with constant temperature (no schedule)."""
+        tokens, _ = diffusion.sample(
+            mock_denoiser,
+            batch_size=2,
+            seq_len=8,
+            num_steps=10,
+            temperature=0.8,
+            temperature_schedule=None,
+            device="cpu",
+        )
+
+        assert tokens.shape == (2, 8)
+        # All temperatures should be 0.8
+        temps = mock_denoiser.temperature_history
+        assert all(abs(t - 0.8) < 0.01 for t in temps)
+
+
+class TestSDDTopPSampling:
+    """Tests for top-p (nucleus) sampling in SDD."""
+
+    @pytest.fixture
+    def mock_denoiser(self, sdd_config, embedding_table):
+        """Create a mock denoiser that tracks top_p."""
+        class MockDenoiser(nn.Module):
+            def __init__(self, config, emb_table):
+                super().__init__()
+                self.config = config
+                self.token_embedding = emb_table
+                self.top_p_history = []
+
+            def eval(self):
+                return self
+
+            def denoise_step(self, state, t, encoder_output=None, encoder_mask=None,
+                           temperature=1.0, top_p=None):
+                self.top_p_history.append(top_p)
+                B, L, k = state.probs.shape
+                new_probs = torch.softmax(torch.randn(B, L, k), dim=-1)
+                new_indices = torch.randint(0, self.config.vocab_size, (B, L, k))
+                return SparseState(probs=new_probs, indices=new_indices)
+
+        return MockDenoiser(sdd_config, embedding_table)
+
+    def test_sample_with_top_p(self, diffusion, mock_denoiser):
+        """Test sampling with top-p filtering."""
+        tokens, _ = diffusion.sample(
+            mock_denoiser,
+            batch_size=2,
+            seq_len=8,
+            num_steps=5,
+            top_p=0.9,
+            device="cpu",
+        )
+
+        assert tokens.shape == (2, 8)
+        # Check top_p was passed to denoise_step
+        assert all(p == 0.9 for p in mock_denoiser.top_p_history)
+
+    def test_sample_without_top_p(self, diffusion, mock_denoiser):
+        """Test sampling without top-p filtering."""
+        tokens, _ = diffusion.sample(
+            mock_denoiser,
+            batch_size=2,
+            seq_len=8,
+            num_steps=5,
+            device="cpu",
+        )
+
+        assert tokens.shape == (2, 8)
+        # top_p should be None
+        assert all(p is None for p in mock_denoiser.top_p_history)
+
+
+class TestSDDTwoStepTraining:
+    """Tests for two-step training to reduce train/inference mismatch."""
+
+    @pytest.fixture
+    def mock_model(self, sdd_config):
+        """Create a mock model for two-step training."""
+        class MockModel(nn.Module):
+            def __init__(self, config):
+                super().__init__()
+                self.config = config
+                self.dummy_param = nn.Parameter(torch.zeros(1))
+
+            def forward(self, state, t, encoder_output=None, encoder_mask=None):
+                logits = torch.randn(state.batch_size, state.seq_len, self.config.vocab_size)
+                return logits + self.dummy_param * 0
+
+            def denoise_step(self, state, t, encoder_output=None, encoder_mask=None,
+                           temperature=1.0, top_p=None):
+                B, L, k = state.probs.shape
+                new_probs = torch.softmax(torch.randn(B, L, k), dim=-1)
+                new_indices = torch.randint(0, self.config.vocab_size, (B, L, k))
+                return SparseState(probs=new_probs, indices=new_indices)
+
+        return MockModel(sdd_config)
+
+    def test_two_step_training_returns_loss(self, diffusion, mock_model):
+        """Test that two-step training returns valid loss."""
+        tokens = torch.randint(5, diffusion.config.vocab_size, (4, 16))
+
+        loss, metrics = diffusion.training_step_two_step(mock_model, tokens)
+
+        assert isinstance(loss, torch.Tensor)
+        assert loss.dim() == 0
+        assert "loss" in metrics
+        assert "accuracy" in metrics
+        assert "mean_t" in metrics
+        assert "mean_t_next" in metrics
+
+    def test_two_step_training_metrics(self, diffusion, mock_model):
+        """Test that two-step training returns expected metrics."""
+        tokens = torch.randint(5, diffusion.config.vocab_size, (4, 16))
+
+        loss, metrics = diffusion.training_step_two_step(mock_model, tokens)
+
+        # t_next should be lower than t (80% of t)
+        assert metrics["mean_t_next"] < metrics["mean_t"]
+
+
+class TestSDDCombinedFeatures:
+    """Tests for combinations of new features."""
+
+    @pytest.fixture
+    def mock_denoiser(self, sdd_config, embedding_table):
+        """Create a mock denoiser."""
+        class MockDenoiser(nn.Module):
+            def __init__(self, config, emb_table):
+                super().__init__()
+                self.config = config
+                self.token_embedding = emb_table
+                self.call_count = 0
+
+            def eval(self):
+                return self
+
+            def denoise_step(self, state, t, encoder_output=None, encoder_mask=None,
+                           temperature=1.0, top_p=None):
+                self.call_count += 1
+                B, L, k = state.probs.shape
+                new_probs = torch.softmax(torch.randn(B, L, k), dim=-1)
+                new_indices = torch.randint(0, self.config.vocab_size, (B, L, k))
+                return SparseState(probs=new_probs, indices=new_indices)
+
+        return MockDenoiser(sdd_config, embedding_table)
+
+    def test_combined_temp_schedule_and_top_p(self, diffusion, mock_denoiser):
+        """Test combining temperature schedule and top-p."""
+        tokens, _ = diffusion.sample(
+            mock_denoiser,
+            batch_size=2,
+            seq_len=8,
+            num_steps=10,
+            temperature_schedule="linear_decay",
+            top_p=0.95,
+            device="cpu",
+        )
+
+        assert tokens.shape == (2, 8)
+        assert mock_denoiser.call_count == 10
+
+    def test_many_steps(self, diffusion, mock_denoiser):
+        """Test sampling with many steps."""
+        tokens, _ = diffusion.sample(
+            mock_denoiser,
+            batch_size=2,
+            seq_len=8,
+            num_steps=100,
+            device="cpu",
+        )
+
+        assert tokens.shape == (2, 8)
+        assert mock_denoiser.call_count == 100
+
+    def test_few_steps(self, diffusion, mock_denoiser):
+        """Test sampling with few steps."""
+        tokens, _ = diffusion.sample(
+            mock_denoiser,
+            batch_size=2,
+            seq_len=8,
+            num_steps=1,
+            device="cpu",
+        )
+
+        assert tokens.shape == (2, 8)
+        assert mock_denoiser.call_count == 1

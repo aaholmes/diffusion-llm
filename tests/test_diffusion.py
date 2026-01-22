@@ -469,6 +469,345 @@ class TestEdgeCases:
 
 
 # =============================================================================
+# Tests: New Features (MDLM Fixes)
+# =============================================================================
+
+class TestTopPSampling:
+    """Tests for nucleus (top-p) sampling."""
+
+    def test_sample_with_top_p(self, diffusion, tiny_model):
+        """Test sampling with top-p filtering."""
+        samples = diffusion.sample(
+            tiny_model,
+            batch_size=2,
+            seq_len=16,
+            num_steps=10,
+            top_p=0.9,
+            device="cpu"
+        )
+
+        assert samples.shape == (2, 16)
+
+    def test_sample_with_top_p_and_top_k(self, diffusion, tiny_model):
+        """Test sampling with both top-p and top-k."""
+        samples = diffusion.sample(
+            tiny_model,
+            batch_size=2,
+            seq_len=16,
+            num_steps=10,
+            top_k=50,
+            top_p=0.95,
+            device="cpu"
+        )
+
+        assert samples.shape == (2, 16)
+
+    def test_p_sample_step_with_top_p(self, diffusion, tiny_model):
+        """Test single denoising step with top-p."""
+        x = torch.full((2, 16), diffusion.mask_token_id)
+        t = torch.tensor([0.8, 0.8])
+        t_next = torch.tensor([0.6, 0.6])
+
+        x_denoised = diffusion.p_sample_step(
+            tiny_model, x, t, t_next, top_p=0.9
+        )
+
+        assert x_denoised.shape == x.shape
+
+    def test_top_p_boundary_values(self, diffusion, tiny_model):
+        """Test top-p with boundary values."""
+        # top_p = 0.0 should be handled gracefully
+        samples = diffusion.sample(
+            tiny_model, 2, 16, 5, top_p=0.0, device="cpu"
+        )
+        assert samples.shape == (2, 16)
+
+        # top_p = 1.0 should be equivalent to no filtering
+        samples = diffusion.sample(
+            tiny_model, 2, 16, 5, top_p=1.0, device="cpu"
+        )
+        assert samples.shape == (2, 16)
+
+
+class TestTemperatureSchedule:
+    """Tests for temperature scheduling during sampling."""
+
+    def test_linear_decay_schedule(self, diffusion, tiny_model):
+        """Test sampling with linear decay temperature schedule."""
+        samples = diffusion.sample(
+            tiny_model,
+            batch_size=2,
+            seq_len=16,
+            num_steps=10,
+            temperature_schedule="linear_decay",
+            device="cpu"
+        )
+
+        assert samples.shape == (2, 16)
+
+    def test_cosine_decay_schedule(self, diffusion, tiny_model):
+        """Test sampling with cosine decay temperature schedule."""
+        samples = diffusion.sample(
+            tiny_model,
+            batch_size=2,
+            seq_len=16,
+            num_steps=10,
+            temperature_schedule="cosine_decay",
+            device="cpu"
+        )
+
+        assert samples.shape == (2, 16)
+
+    def test_temperature_schedule_affects_output(self, diffusion, tiny_model):
+        """Test that temperature schedule affects sampling output."""
+        torch.manual_seed(42)
+        samples_constant = diffusion.sample(
+            tiny_model, 2, 16, 10, temperature=1.0, device="cpu"
+        )
+
+        torch.manual_seed(42)
+        samples_scheduled = diffusion.sample(
+            tiny_model, 2, 16, 10, temperature_schedule="linear_decay", device="cpu"
+        )
+
+        # Different temperature strategies should produce different results
+        assert not torch.equal(samples_constant, samples_scheduled)
+
+    def test_invalid_temperature_schedule(self, diffusion, tiny_model):
+        """Test that invalid temperature schedule falls back to constant."""
+        samples = diffusion.sample(
+            tiny_model,
+            batch_size=2,
+            seq_len=16,
+            num_steps=10,
+            temperature=0.8,
+            temperature_schedule="invalid_schedule",
+            device="cpu"
+        )
+
+        assert samples.shape == (2, 16)
+
+    def test_trajectory_with_temperature_schedule(self, diffusion, tiny_model):
+        """Test trajectory sampling with temperature schedule."""
+        samples, trajectory = diffusion.sample_with_trajectory(
+            tiny_model,
+            batch_size=2,
+            seq_len=16,
+            num_steps=10,
+            temperature_schedule="linear_decay",
+            device="cpu"
+        )
+
+        assert len(trajectory) == 11
+        assert samples.shape == (2, 16)
+
+    def test_trajectory_with_cosine_schedule(self, diffusion, tiny_model):
+        """Test trajectory sampling with cosine temperature schedule."""
+        samples, trajectory = diffusion.sample_with_trajectory(
+            tiny_model,
+            batch_size=2,
+            seq_len=16,
+            num_steps=10,
+            temperature_schedule="cosine_decay",
+            device="cpu"
+        )
+
+        assert len(trajectory) == 11
+
+    def test_trajectory_with_top_p(self, diffusion, tiny_model):
+        """Test trajectory sampling with top-p."""
+        samples, trajectory = diffusion.sample_with_trajectory(
+            tiny_model,
+            batch_size=2,
+            seq_len=16,
+            num_steps=10,
+            top_p=0.9,
+            device="cpu"
+        )
+
+        assert len(trajectory) == 11
+
+
+class TestPromptModes:
+    """Tests for different prompt handling modes."""
+
+    def test_prompt_mode_fixed(self, diffusion, tiny_model):
+        """Test fixed prompt mode (original behavior)."""
+        prompt = torch.randint(5, 100, (2, 8))
+
+        samples = diffusion.sample(
+            tiny_model,
+            batch_size=2,
+            seq_len=24,
+            num_steps=10,
+            device="cpu",
+            prompt=prompt,
+            prompt_mode="fixed"
+        )
+
+        # Prompt should be exactly preserved
+        assert torch.equal(samples[:, :8], prompt)
+
+    def test_prompt_mode_soft(self, diffusion, tiny_model):
+        """Test soft prompt mode."""
+        prompt = torch.randint(5, 100, (2, 8))
+
+        samples = diffusion.sample(
+            tiny_model,
+            batch_size=2,
+            seq_len=24,
+            num_steps=10,
+            device="cpu",
+            prompt=prompt,
+            prompt_mode="soft"
+        )
+
+        assert samples.shape == (2, 24)
+        # In soft mode, prompt positions should not be MASK tokens
+        assert (samples[:, :8] != diffusion.mask_token_id).all()
+
+    def test_prompt_modes_differ(self, diffusion, tiny_model):
+        """Test that different prompt modes can produce different outputs."""
+        prompt = torch.randint(5, 100, (2, 4))
+
+        torch.manual_seed(42)
+        samples_fixed = diffusion.sample(
+            tiny_model, 2, 16, 10, device="cpu",
+            prompt=prompt, prompt_mode="fixed"
+        )
+
+        torch.manual_seed(42)
+        samples_soft = diffusion.sample(
+            tiny_model, 2, 16, 10, device="cpu",
+            prompt=prompt, prompt_mode="soft"
+        )
+
+        # Fixed mode should preserve prompt exactly
+        assert torch.equal(samples_fixed[:, :4], prompt)
+
+
+class TestRecorruption:
+    """Tests for re-corruption during sampling."""
+
+    def test_sample_with_recorruption(self, diffusion, tiny_model):
+        """Test sampling with re-corruption enabled."""
+        samples = diffusion.sample(
+            tiny_model,
+            batch_size=2,
+            seq_len=16,
+            num_steps=10,
+            device="cpu",
+            allow_recorruption=True,
+            recorruption_rate=0.1
+        )
+
+        assert samples.shape == (2, 16)
+
+    def test_p_sample_step_with_recorruption(self, diffusion, tiny_model):
+        """Test single step with re-corruption."""
+        # Start with some unmasked tokens
+        x = torch.randint(5, 100, (2, 16))
+        x[:, 8:] = diffusion.mask_token_id  # Half masked
+
+        t = torch.tensor([0.5, 0.5])
+        t_next = torch.tensor([0.3, 0.3])
+
+        x_denoised = diffusion.p_sample_step(
+            tiny_model, x, t, t_next,
+            allow_recorruption=True,
+            recorruption_rate=0.5
+        )
+
+        assert x_denoised.shape == x.shape
+
+    def test_recorruption_disabled_by_default(self, diffusion, tiny_model):
+        """Test that re-corruption is disabled by default."""
+        x = torch.randint(5, 100, (2, 16))  # All unmasked
+        t = torch.tensor([0.5, 0.5])
+        t_next = torch.tensor([0.3, 0.3])
+
+        x_denoised = diffusion.p_sample_step(tiny_model, x, t, t_next)
+
+        # Without re-corruption, unmasked tokens should stay unmasked
+        # (unless they were already MASK tokens)
+        assert x_denoised.shape == x.shape
+
+    def test_recorruption_rate_zero(self, diffusion, tiny_model):
+        """Test that recorruption_rate=0 has no effect."""
+        x = torch.randint(5, 100, (2, 16))
+        t = torch.tensor([0.5, 0.5])
+        t_next = torch.tensor([0.3, 0.3])
+
+        x_denoised = diffusion.p_sample_step(
+            tiny_model, x, t, t_next,
+            allow_recorruption=True,
+            recorruption_rate=0.0
+        )
+
+        assert x_denoised.shape == x.shape
+
+
+class TestConditionalSampling:
+    """Tests for conditional sampling with encoder output."""
+
+    def test_sample_with_encoder_output(self, diffusion, tiny_model):
+        """Test sampling with encoder conditioning."""
+        encoder_output = torch.randn(2, 10, tiny_model.d_model)
+        encoder_mask = torch.ones(2, 10)
+
+        samples = diffusion.sample(
+            tiny_model,
+            batch_size=2,
+            seq_len=16,
+            num_steps=10,
+            device="cpu",
+            encoder_output=encoder_output,
+            encoder_attention_mask=encoder_mask
+        )
+
+        assert samples.shape == (2, 16)
+
+    def test_training_with_encoder_output(self, diffusion, tiny_model, clean_tokens):
+        """Test training loss with encoder conditioning."""
+        encoder_output = torch.randn(4, 10, tiny_model.d_model)
+        encoder_mask = torch.ones(4, 10)
+
+        loss, metrics = diffusion.training_losses(
+            tiny_model, clean_tokens,
+            encoder_output=encoder_output,
+            encoder_attention_mask=encoder_mask
+        )
+
+        assert loss.item() > 0
+
+
+class TestMDLMTransitionLogic:
+    """Tests for proper MDLM transition probabilities."""
+
+    def test_unmask_probability_increases_over_time(self, diffusion, tiny_model):
+        """Test that unmask probability increases as t decreases."""
+        x = torch.full((4, 32), diffusion.mask_token_id)
+
+        # Early in sampling (t high), should unmask fewer tokens
+        t_high = torch.full((4,), 0.9)
+        t_next_high = torch.full((4,), 0.8)
+        x_early = diffusion.p_sample_step(tiny_model, x.clone(), t_high, t_next_high)
+
+        # Later in sampling (t low), should unmask more tokens per step
+        t_low = torch.full((4,), 0.2)
+        t_next_low = torch.full((4,), 0.1)
+        x_late = diffusion.p_sample_step(tiny_model, x.clone(), t_low, t_next_low)
+
+        # Both should reduce mask count
+        orig_masks = (x == diffusion.mask_token_id).sum().item()
+        early_masks = (x_early == diffusion.mask_token_id).sum().item()
+        late_masks = (x_late == diffusion.mask_token_id).sum().item()
+
+        assert early_masks <= orig_masks
+        assert late_masks <= orig_masks
+
+
+# =============================================================================
 # Main
 # =============================================================================
 

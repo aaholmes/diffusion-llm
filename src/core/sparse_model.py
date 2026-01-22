@@ -682,6 +682,7 @@ class BilateralSparseDenoiser(nn.Module):
         encoder_output: Optional[torch.Tensor] = None,
         encoder_mask: Optional[torch.Tensor] = None,
         temperature: float = 1.0,
+        top_p: Optional[float] = None,
     ) -> SparseState:
         """
         Single denoising step: input sparse → output sparse.
@@ -692,6 +693,8 @@ class BilateralSparseDenoiser(nn.Module):
             encoder_output: Encoder output for conditioning
             encoder_mask: Encoder mask
             temperature: Sampling temperature (lower = more confident)
+            top_p: Optional nucleus sampling threshold (e.g., 0.9, 0.95)
+                   If provided, only keep tokens within top-p cumulative probability
 
         Returns:
             New SparseState (top-k from output distribution)
@@ -704,6 +707,22 @@ class BilateralSparseDenoiser(nn.Module):
         # Higher temperature = flatter distribution (more diverse)
         if temperature != 1.0:
             logits = logits / temperature
+
+        # Apply nucleus (top-p) filtering if specified
+        if top_p is not None and 0.0 < top_p < 1.0:
+            sorted_logits, sorted_indices = torch.sort(logits, dim=-1, descending=True)
+            sorted_probs = F.softmax(sorted_logits, dim=-1)
+            cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+            # Remove tokens with cumulative probability above threshold
+            sorted_indices_to_remove = cumulative_probs > top_p
+            # Keep at least one token
+            sorted_indices_to_remove[..., 0] = False
+            # Shift to include first token above threshold
+            sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+            # Scatter back to original indexing
+            indices_to_remove = torch.zeros_like(logits, dtype=torch.bool)
+            indices_to_remove.scatter_(-1, sorted_indices, sorted_indices_to_remove)
+            logits = logits.masked_fill(indices_to_remove, float('-inf'))
 
         # Convert to probabilities
         probs_full = F.softmax(logits, dim=-1)  # [B, L, vocab_size]
@@ -888,6 +907,7 @@ class SparseDenoiser(nn.Module):
         encoder_output: Optional[torch.Tensor] = None,
         encoder_mask: Optional[torch.Tensor] = None,
         temperature: float = 1.0,
+        top_p: Optional[float] = None,
     ) -> SparseState:
         """
         Single denoising step: input sparse → output sparse.
@@ -900,6 +920,8 @@ class SparseDenoiser(nn.Module):
             encoder_output: Encoder output for conditioning
             encoder_mask: Encoder mask
             temperature: Sampling temperature (lower = more confident)
+            top_p: Optional nucleus sampling threshold (e.g., 0.9, 0.95)
+                   If provided, only keep tokens within top-p cumulative probability
 
         Returns:
             New SparseState (top-k from output distribution)
@@ -912,6 +934,22 @@ class SparseDenoiser(nn.Module):
         # Higher temperature = flatter distribution (more diverse)
         if temperature != 1.0:
             logits = logits / temperature
+
+        # Apply nucleus (top-p) filtering if specified
+        if top_p is not None and 0.0 < top_p < 1.0:
+            sorted_logits, sorted_indices = torch.sort(logits, dim=-1, descending=True)
+            sorted_probs = F.softmax(sorted_logits, dim=-1)
+            cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+            # Remove tokens with cumulative probability above threshold
+            sorted_indices_to_remove = cumulative_probs > top_p
+            # Keep at least one token
+            sorted_indices_to_remove[..., 0] = False
+            # Shift to include first token above threshold
+            sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+            # Scatter back to original indexing
+            indices_to_remove = torch.zeros_like(logits, dtype=torch.bool)
+            indices_to_remove.scatter_(-1, sorted_indices, sorted_indices_to_remove)
+            logits = logits.masked_fill(indices_to_remove, float('-inf'))
 
         # Convert to probabilities
         probs_full = F.softmax(logits, dim=-1)  # [B, L, vocab_size]
